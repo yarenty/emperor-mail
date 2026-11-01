@@ -3,7 +3,7 @@
   "name": "io.github.yarenty/emperor-mail",
   "title": "emperor-mail",
   "description": "Email over IMAP and SMTP: search, read messages and attachments, draft, and send when allowed",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "repository": {
     "url": "https://github.com/yarenty/emperor-mail",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "cargo",
       "identifier": "emperor-mail",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "transport": {
         "type": "stdio"
       },
@@ -26,22 +26,31 @@
           "isRequired": true
         },
         {
-          "type": "named",
-          "name": "--stdio",
+          "type": "positional",
+          "value": "--stdio",
+          "valueHint": "--stdio",
           "description": "Speak MCP over stdin/stdout with one mailbox from the environment",
           "isRequired": true
         },
         {
-          "type": "named",
-          "name": "--allow-send",
-          "description": "Turn the send tool on; without it send refuses and points to draft",
-          "format": "boolean",
+          "type": "positional",
+          "value": "--allow-send",
+          "valueHint": "--allow-send",
+          "description": "Turn the send tool on (same as MAIL_ALLOW_SEND=true); without it send refuses and points to draft",
           "isRequired": false
         },
         {
           "type": "named",
           "name": "--send-allow",
-          "description": "Recipients send may write to: an address (ann@example.org) or a domain (@example.org); repeatable",
+          "description": "Recipients send may write to: an address (ann@example.org) or a domain (@example.org); repeatable or comma-separated (same as MAIL_SEND_ALLOW)",
+          "placeholder": "@example.org",
+          "isRequired": false,
+          "isRepeated": true
+        },
+        {
+          "type": "named",
+          "name": "--from-allow",
+          "description": "From addresses send and draft may use: an address or a domain (@example.org); repeatable or comma-separated (same as MAIL_FROM_ALLOW). Unset: any",
           "placeholder": "@example.org",
           "isRequired": false,
           "isRepeated": true
@@ -112,6 +121,28 @@
           "name": "SMTP_SECURITY",
           "description": "SMTP connection security; plain only for a loopback host (default tls, starttls on ports 587 and 25)",
           "choices": ["tls", "starttls", "plain"],
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "MAIL_ALLOW_SEND",
+          "description": "true turns the send tool on; unset, empty, false, 0 or no keep it off (send refuses and points to draft)",
+          "format": "boolean",
+          "default": "false",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "MAIL_SEND_ALLOW",
+          "description": "Comma-separated recipients send may write to: addresses (ann@example.org) or domains (@example.org). With sending on and none set, every recipient is refused",
+          "placeholder": "@example.org",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "MAIL_FROM_ALLOW",
+          "description": "Comma-separated From addresses send and draft may use: addresses or domains (@example.org). Unset: any",
+          "placeholder": "@example.org",
           "isRequired": false,
           "isSecret": false
         }

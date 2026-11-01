@@ -1,6 +1,6 @@
 # emperor-mail — AI agent notes
 
-**Crate**: `emperor-mail` · **Version**: 0.1.1 · **Licence**: MIT OR Apache-2.0 · **Rust**: 1.88 (`rust-version`; edition 2024, let-chains)
+**Crate**: `emperor-mail` · **Version**: 0.1.2 · **Licence**: MIT OR Apache-2.0 · **Rust**: 1.88 (`rust-version`; edition 2024, let-chains)
 
 ## Scope
 
@@ -8,7 +8,7 @@ An **MCP server for email** (IMAP + SMTP) built on [`emperor-mcp`](https://githu
 
 Layout (one crate, binary + library so tests can drive it):
 
-- `src/main.rs` — clap CLI: `serve` and `doctor`, both taking `--bind`, `--allow-send`, `--send-allow`, `--from-allow`, `--no-sent-copy`, `--pin-servers`, `--stdio`.
+- `src/main.rs` — clap CLI: `serve` and `doctor`, both taking `--bind`, `--allow-send`, `--send-allow`, `--from-allow`, `--no-sent-copy`, `--pin-servers`, `--stdio`. The three send switches also read `MAIL_ALLOW_SEND` (clap falsey parser), `MAIL_SEND_ALLOW` and `MAIL_FROM_ALLOW` (comma-separated) for the Docker image.
 - `src/server.rs` — `MailServer`, `Options` and the six tools with their annotations. Thin: resolve credentials, one IMAP/SMTP call, frame the result. `done` turns `MailError::AuthRejected` into `emperor_mcp::credentials_rejected` (HTTP 401), every other error into an `isError` result.
 - `src/config.rs` — `Settings` (one source: env or headers), `Credentials::resolve` (the only place the two meet), `Auth` (password or OAuth token), `xoauth2_initial_response`, `Endpoint`/`Security`, `HEADER_NAMES` and `forward_config()`, `Secret`.
 - `src/imap.rs` — connect (TLS / STARTTLS / loopback-only plain), `LOGIN` or `AUTHENTICATE XOAUTH2`, `with_session` (one connection per call, timeouts), list/search/fetch/append, drafts and sent folder lookup.
@@ -19,7 +19,7 @@ Layout (one crate, binary + library so tests can drive it):
 - `src/policy.rs` — `SendPolicy` (`--allow-send`, `--send-allow`) and `FromPolicy` (`--from-allow`), one pattern syntax.
 - `src/doctor.rs` — the `doctor` report on `emperor_mcp::doctor`.
 
-Tests: unit tests in each module; `tests/parsing.rs` (fixture `.eml` files in `tests/fixtures/`), `tests/compose.rs` (MIME out, parsed back), `tests/http.rs` (real HTTP through `emperor_mcp::serve`: tool annotations checked with `emperor_mcp::testkit` on a live `tools/list`; a scripted IMAP server on loopback records what the tool sent, including LOGIN, XOAUTH2 and the 401 on refused credentials), `tests/greenmail.rs` (`#[ignore]`: live IMAP/SMTP against a GreenMail container the test starts and removes, including the Sent copy).
+Tests: unit tests in each module; `tests/parsing.rs` (fixture `.eml` files in `tests/fixtures/`), `tests/compose.rs` (MIME out, parsed back), `tests/http.rs` (real HTTP through `emperor_mcp::serve`: tool annotations checked with `emperor_mcp::testkit` on a live `tools/list`; a scripted IMAP server on loopback records what the tool sent, including LOGIN, XOAUTH2 and the 401 on refused credentials), `tests/greenmail.rs` (`#[ignore]`: live IMAP/SMTP against a GreenMail container the test starts and removes, including the Sent copy). `scripts/docker-greenmail.sh` runs the built image over stdio against GreenMail (doctor, the send variables, initialize/tools/list/list_folders with stdout checked to be JSON-RPC only); the `Docker` workflow runs it on amd64 and arm64.
 
 ## Before you change code
 

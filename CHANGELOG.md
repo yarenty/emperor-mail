@@ -4,6 +4,16 @@ All notable changes to emperor-mail. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-01
+
+### Added
+- **Send switches from the environment** - `MAIL_ALLOW_SEND` (`--allow-send`; unset, empty, `false`, `0` or `no` mean off), `MAIL_SEND_ALLOW` (`--send-allow`) and `MAIL_FROM_ALLOW` (`--from-allow`), comma-separated, for the Docker image and catalogs that can only set variables. With sending on and no recipient pattern every recipient is still refused.
+- **Docker image check on amd64 and arm64** - CI builds the image on both architectures and runs it over stdio against a GreenMail server.
+
+### Changed
+- **Send policy summary** - the start-up log and `doctor` say whether send is on and how many recipient patterns there are.
+- **Registry metadata** - `server.json` lists `--stdio` and `--allow-send` as fixed positional arguments, adds `--from-allow` and the three new variables.
+
 ## [0.1.1] - 2026-11-01
 
 ### Added
@@ -35,6 +45,7 @@ All notable changes to emperor-mail. The format follows [Keep a Changelog](https
 - TLS through rustls and the operating system's trust store; STARTTLS supported; unencrypted connections only to loopback hosts named in the environment.
 - Prebuilt binaries for macOS (arm64, x86_64), Linux x86_64 and Windows x86_64 on each tagged release, with build provenance attestations and a `SHA256SUMS` file.
 
-[Unreleased]: https://github.com/yarenty/emperor-mail/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/yarenty/emperor-mail/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/yarenty/emperor-mail/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/yarenty/emperor-mail/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/yarenty/emperor-mail/releases/tag/v0.1.0
