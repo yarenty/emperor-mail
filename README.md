@@ -30,7 +30,14 @@ Prebuilt binaries (macOS arm64/x86_64, Linux x86_64, Windows x86_64) are attache
 [GitHub releases](https://github.com/yarenty/emperor-mail/releases). From source:
 
 ```bash
-cargo install --git https://github.com/yarenty/emperor-mail
+cargo install emperor-mail
+```
+
+Or as a container (stdio, one mailbox from the environment):
+
+```bash
+docker build -t emperor-mail https://github.com/yarenty/emperor-mail.git
+docker run -i --rm -e MAIL_USER -e MAIL_PASSWORD -e IMAP_HOST -e SMTP_HOST emperor-mail
 ```
 
 ## Run for one mailbox
@@ -189,13 +196,12 @@ transport = "http"
 url = "http://127.0.0.1:8033/mcp"
 headers = { "X-Mail-User" = "you@example.com", "X-Mail-Password" = "<app password>", "X-Mail-Imap-Host" = "imap.example.com" }
 
-# or one mailbox over stdio
+# or one mailbox over stdio: MAIL_USER, MAIL_PASSWORD, IMAP_HOST and the other
+# variables are read from kowalski's environment
 [[mcp.servers]]
 name = "mail"
 transport = "stdio"
-command = "emperor-mail"
-args = ["serve", "--stdio"]
-env = { MAIL_USER = "you@example.com", MAIL_PASSWORD = "<app password>", IMAP_HOST = "imap.example.com" }
+command = ["emperor-mail", "serve", "--stdio"]
 ```
 
 Any other MCP client: POST JSON-RPC to `/mcp` with `Accept: application/json, text/event-stream`.
@@ -266,7 +272,7 @@ planted one, so it limits what a misled model can do:
 
 ```text
 $ emperor-mail doctor --stdio
-emperor-mail 0.1.0 doctor
+emperor-mail 0.1.1 doctor
   [FAIL] MAIL_USER      not set
   [FAIL] MAIL_PASSWORD  not set
   [FAIL] IMAP_HOST      not set
@@ -299,6 +305,11 @@ cargo test --test greenmail -- --ignored   # live IMAP/SMTP against GreenMail in
 
 See [AGENTS.md](./AGENTS.md) for the layout and conventions and
 [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request.
+
+## Links
+
+- Crate: <https://crates.io/crates/emperor-mail>
+- Official MCP registry: mcp-name: io.github.yarenty/emperor-mail
 
 ## License
 

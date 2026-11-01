@@ -1,0 +1,121 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.yarenty/emperor-mail",
+  "title": "emperor-mail",
+  "description": "Email over IMAP and SMTP: search, read messages and attachments, draft, and send when allowed",
+  "version": "0.1.1",
+  "repository": {
+    "url": "https://github.com/yarenty/emperor-mail",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/yarenty/emperor-mail",
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "emperor-mail",
+      "version": "0.1.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "serve",
+          "valueHint": "serve",
+          "description": "Run the MCP server",
+          "isRequired": true
+        },
+        {
+          "type": "named",
+          "name": "--stdio",
+          "description": "Speak MCP over stdin/stdout with one mailbox from the environment",
+          "isRequired": true
+        },
+        {
+          "type": "named",
+          "name": "--allow-send",
+          "description": "Turn the send tool on; without it send refuses and points to draft",
+          "format": "boolean",
+          "isRequired": false
+        },
+        {
+          "type": "named",
+          "name": "--send-allow",
+          "description": "Recipients send may write to: an address (ann@example.org) or a domain (@example.org); repeatable",
+          "placeholder": "@example.org",
+          "isRequired": false,
+          "isRepeated": true
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "MAIL_USER",
+          "description": "Login name for IMAP and SMTP",
+          "placeholder": "you@example.com",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "MAIL_PASSWORD",
+          "description": "Password or app password (set this or MAIL_OAUTH_TOKEN)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "MAIL_OAUTH_TOKEN",
+          "description": "OAuth 2.0 access token for XOAUTH2, instead of a password (Gmail, Microsoft 365)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "MAIL_FROM",
+          "description": "From address when the login name is not an address (default: the login name)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "IMAP_HOST",
+          "description": "IMAP server host name",
+          "placeholder": "imap.example.com",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "IMAP_PORT",
+          "description": "IMAP port (default 993, or 143 with starttls)",
+          "format": "number",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "IMAP_SECURITY",
+          "description": "IMAP connection security; plain only for a loopback host (default tls, starttls on port 143)",
+          "choices": ["tls", "starttls", "plain"],
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "SMTP_HOST",
+          "description": "SMTP server host name, needed only for send",
+          "placeholder": "smtp.example.com",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "SMTP_PORT",
+          "description": "SMTP port (default 465, or 587 with starttls)",
+          "format": "number",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "SMTP_SECURITY",
+          "description": "SMTP connection security; plain only for a loopback host (default tls, starttls on ports 587 and 25)",
+          "choices": ["tls", "starttls", "plain"],
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

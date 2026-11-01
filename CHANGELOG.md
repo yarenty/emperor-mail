@@ -4,6 +4,15 @@ All notable changes to emperor-mail. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-01
+
+### Added
+- **Registry metadata** - `server.json` for the official MCP registry (`io.github.yarenty/emperor-mail`, cargo package, stdio, every environment variable described), and the registry name in the README.
+- **Dockerfile** - a multi-stage image (Debian slim runtime with the CA bundle, non-root user, OCI labels) that runs `emperor-mail serve --stdio` with one mailbox from the environment.
+
+### Fixed
+- **kowalski snippet in the README** - the stdio entry now uses `command` as an argument list (`["emperor-mail", "serve", "--stdio"]`); the mail variables come from kowalski's environment.
+
 ## [0.1.0] - 2026-11-01
 
 > First release: a mailbox as six MCP tools, draft by default.
@@ -26,5 +35,6 @@ All notable changes to emperor-mail. The format follows [Keep a Changelog](https
 - TLS through rustls and the operating system's trust store; STARTTLS supported; unencrypted connections only to loopback hosts named in the environment.
 - Prebuilt binaries for macOS (arm64, x86_64), Linux x86_64 and Windows x86_64 on each tagged release, with build provenance attestations and a `SHA256SUMS` file.
 
-[Unreleased]: https://github.com/yarenty/emperor-mail/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/yarenty/emperor-mail/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/yarenty/emperor-mail/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/yarenty/emperor-mail/releases/tag/v0.1.0
