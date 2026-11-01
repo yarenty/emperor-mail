@@ -1,0 +1,38 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste passwords, OAuth tokens or real message content. Replace addresses with
+        example.org ones.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `emperor-mail --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: How it runs
+      options:
+        - stdio (one mailbox from the environment)
+        - HTTP, one mailbox from the environment
+        - HTTP, credentials in forwarded headers
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Mail provider or server
+      description: e.g. Fastmail, Gmail, Microsoft 365, Dovecot 2.3.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The tool call, what you expected and what you got. `emperor-mail doctor` output helps (it never prints secrets).
+    validations:
+      required: true

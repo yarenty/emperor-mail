@@ -1,0 +1,15 @@
+name: Feature request
+description: Suggest a change or a new capability.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What do you need to do?
+      description: The task, not the solution. The server keeps six tools; a change that needs more is likely a separate server.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How you would like it to work
