@@ -36,5 +36,3 @@ wildcards = "allow"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# emperor-mcp 0.2 is consumed from its branch until it is published; drop this line then.
-allow-git = ["https://github.com/yarenty/emperor-mcp"]

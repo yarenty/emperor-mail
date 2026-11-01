@@ -4,7 +4,7 @@
 
 ## Scope
 
-An **MCP server for email** (IMAP + SMTP) built on [`emperor-mcp`](https://github.com/yarenty/emperor-mcp) 0.2 with an rmcp 3.8 `#[tool_router]` server: stateless Streamable HTTP at `/mcp` + `/health` through `emperor_mcp::serve`, or stdio (`serve --stdio`) through rmcp's `transport-io`. Exactly **six tools** (`list_folders`, `search`, `read_message`, `read_attachment`, `draft`, `send`), inside the framework's 3–8 budget. Until emperor-mcp 0.2 is published it is a git dependency on the `chore/rmcp-3` branch (`Cargo.toml` and `deny.toml` `allow-git` say so; switch both when it ships).
+An **MCP server for email** (IMAP + SMTP) built on [`emperor-mcp`](https://github.com/yarenty/emperor-mcp) 0.2 with an rmcp 3.8 `#[tool_router]` server: stateless Streamable HTTP at `/mcp` + `/health` through `emperor_mcp::serve`, or stdio (`serve --stdio`) through rmcp's `transport-io`. Exactly **six tools** (`list_folders`, `search`, `read_message`, `read_attachment`, `draft`, `send`), inside the framework's 3–8 budget. emperor-mcp comes from crates.io.
 
 Layout (one crate, binary + library so tests can drive it):
 
