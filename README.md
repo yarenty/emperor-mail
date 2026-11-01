@@ -310,6 +310,7 @@ See [AGENTS.md](./AGENTS.md) for the layout and conventions and
 
 - Crate: <https://crates.io/crates/emperor-mail>
 - Official MCP registry: mcp-name: io.github.yarenty/emperor-mail
+- How it compares with other mail MCP servers: [docs/COMPARISON.md](docs/COMPARISON.md)
 
 ## License
 
