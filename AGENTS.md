@@ -1,6 +1,6 @@
 # emperor-mail — AI agent notes
 
-**Crate**: `emperor-mail` · **Version**: 0.1.0 (not yet on crates.io) · **Licence**: MIT OR Apache-2.0 · **Rust**: 1.88 (`rust-version`; edition 2024, let-chains)
+**Crate**: `emperor-mail` · **Version**: 0.1.1 · **Licence**: MIT OR Apache-2.0 · **Rust**: 1.88 (`rust-version`; edition 2024, let-chains)
 
 ## Scope
 
@@ -69,3 +69,5 @@ After any behaviour change, update **[`README.md`](./README.md)** (tools table, 
 - [`CHANGELOG.md`](./CHANGELOG.md) — what each release changed
 - [`manifest.yaml`](./manifest.yaml) — MCP manifest (emperor-mcp `MANIFEST_SPEC.md`)
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — checks and DCO sign-off
+- [`server.json`](./server.json) — official MCP registry entry; its two `version` fields and the Dockerfile's `VERSION` follow `Cargo.toml`
+- [`Dockerfile`](./Dockerfile) — stdio image (builds `src/` only, see `.dockerignore`)

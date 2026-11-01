@@ -698,7 +698,7 @@ checksum = "e079f19b08ca6239f47f8ba8509c11cf3ea30095831f7fed61441475edd8c449"
 
 [[package]]
 name = "emperor-mail"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-imap",
