@@ -40,6 +40,10 @@ docker build -t emperor-mail https://github.com/yarenty/emperor-mail.git
 docker run -i --rm -e MAIL_USER -e MAIL_PASSWORD -e IMAP_HOST -e SMTP_HOST emperor-mail
 ```
 
+The image runs `emperor-mail serve --stdio`, so sending is switched with variables rather than
+flags: add `-e MAIL_ALLOW_SEND=true -e MAIL_SEND_ALLOW=@example.org` to let `send` write to that
+domain (see [Flags](#flags)).
+
 ## Run for one mailbox
 
 Credentials come from the environment. Use an **app password**, never your account password
@@ -66,6 +70,9 @@ emperor-mail serve                      # or Streamable HTTP on 127.0.0.1:8033/m
 | `IMAP_SECURITY` | `tls`, `starttls` or `plain` | `tls`, or `starttls` on port 143 |
 | `SMTP_HOST` / `SMTP_PORT` | SMTP server | port 465 (587 with `starttls`) |
 | `SMTP_SECURITY` | `tls`, `starttls` or `plain` | `tls`, or `starttls` on ports 587 and 25 |
+| `MAIL_ALLOW_SEND` | Same as `--allow-send`: `true`, `1` or `yes` turn `send` on | off (unset, empty, `false`, `0`, `no`) |
+| `MAIL_SEND_ALLOW` | Same as `--send-allow`, comma-separated | none |
+| `MAIL_FROM_ALLOW` | Same as `--from-allow`, comma-separated | any |
 
 `plain` (no encryption) is accepted only from the environment and only for a loopback host,
 such as a local mail bridge. Certificates are always verified against the operating system's
@@ -84,6 +91,13 @@ trust store.
 | `--from-allow <pattern>` | From addresses `send` and `draft` may use (same syntax). Unset: any |
 | `--no-sent-copy` | Do not copy sent mail to the Sent folder (for providers that file it themselves) |
 | `--pin-servers` | Always use the environment's IMAP/SMTP servers; ignore server headers |
+
+The three send switches can also come from the environment, for containers and catalogs that
+cannot pass flags: `MAIL_ALLOW_SEND` for `--allow-send` (unset, empty, `false`, `0` or `no` mean
+off), `MAIL_SEND_ALLOW` for `--send-allow` and `MAIL_FROM_ALLOW` for `--from-allow`
+(comma-separated; empty means no pattern). A flag on the command line wins over its variable.
+The safety rule is the same either way: with sending on and no recipient pattern, every
+recipient is refused, and patterns without sending on are a start-up error.
 
 ## Run as a shared server
 
@@ -242,12 +256,14 @@ planted one, so it limits what a misled model can do:
 - **Draft, then a human sends.** `draft` puts the message in Drafts for a person to review; it
   is the default way to write. `send` stays in the tool list even when sending is off, so a
   model that tries it gets a refusal that names `draft` instead of inventing a workaround.
-- **Sending is opt-in.** Without `--allow-send`, `send` answers with an error that points to
+- **Sending is opt-in.** Without `--allow-send` (or `MAIL_ALLOW_SEND=true`), `send` answers with an error that points to
   `draft`. With it, every To and Cc recipient must match a `--send-allow` pattern: an exact
   address (`ann@example.org`) or a whole domain (`@example.org`, not its subdomains).
 
   ```bash
   emperor-mail serve --allow-send --send-allow @example.org --send-allow boss@partner.example
+  # the same from the environment
+  MAIL_ALLOW_SEND=true MAIL_SEND_ALLOW=@example.org,boss@partner.example emperor-mail serve
   ```
 
 - **The sender is limited too.** `--from-allow` restricts the From address of `send` and
@@ -272,7 +288,7 @@ planted one, so it limits what a misled model can do:
 
 ```text
 $ emperor-mail doctor --stdio
-emperor-mail 0.1.1 doctor
+emperor-mail 0.1.2 doctor
   [FAIL] MAIL_USER      not set
   [FAIL] MAIL_PASSWORD  not set
   [FAIL] IMAP_HOST      not set
@@ -288,7 +304,8 @@ emperor-mail 0.1.1 doctor
 `doctor` takes the same flags as `serve`. It checks the environment (the password or token
 only by length), that the IMAP server is reachable and the login works with INBOX selectable, that the
 SMTP server is reachable and (with `--allow-send`) accepts EHLO and AUTH without sending
-anything, summarises the send and From policies, the sent copy and whether servers are
+anything, summarises the send and From policies (whether send is on and how many recipient
+patterns there are), the sent copy and whether servers are
 pinned, checks the listen address is free (not with `--stdio`)
 and the tool budget. On a shared HTTP server with no credentials in the environment the login
 checks are warnings: credentials come per request. Exit code 1 when a check fails.

@@ -1,7 +1,7 @@
 //! Who `send` may write to.
 //!
-//! Sending is off unless the server was started with `--allow-send`, and then only to recipients
-//! that match a `--send-allow` pattern: an exact address (`ann@example.org`) or a whole domain
+//! Sending is off unless the server was started with `--allow-send` (or `MAIL_ALLOW_SEND`), and
+//! then only to recipients that match a `--send-allow` (`MAIL_SEND_ALLOW`) pattern: an exact address (`ann@example.org`) or a whole domain
 //! (`@example.org`, no subdomains). Every recipient (To and Cc) must match. `draft` is never
 //! restricted by recipient: a draft waits in the Drafts folder for a human.
 //!
@@ -97,7 +97,8 @@ impl SendPolicy {
     pub fn check<'a>(&self, recipients: impl IntoIterator<Item = &'a str>) -> Result<()> {
         if !self.enabled {
             return Err(MailError::SendRefused(
-                "sending is disabled on this server (it was not started with --allow-send). \
+                "sending is disabled on this server (it was not started with --allow-send or \
+                 MAIL_ALLOW_SEND). \
                  Use the `draft` tool instead: it saves the message in the Drafts folder for a \
                  person to review and send."
                     .to_string(),
@@ -132,9 +133,13 @@ impl SendPolicy {
         if !self.enabled {
             "send off: draft only".to_string()
         } else if self.patterns.is_empty() {
-            "send on, but no --send-allow pattern: every recipient is refused".to_string()
+            "send on, 0 recipient patterns: every recipient is refused".to_string()
         } else {
-            format!("send on, to {}", self.describe_patterns())
+            format!(
+                "send on, {} recipient pattern(s): {}",
+                self.patterns.len(),
+                self.describe_patterns()
+            )
         }
     }
 }
@@ -231,6 +236,10 @@ mod tests {
         let p = SendPolicy::new(true, &[]).unwrap();
         assert!(p.check(["a@example.org"]).is_err());
         assert!(p.summary().contains("every recipient is refused"));
+        assert!(p.summary().contains("0 recipient patterns"));
+        let p = SendPolicy::new(true, &["@a.example".into(), "b@c.example".into()]).unwrap();
+        assert!(p.summary().starts_with("send on, 2 recipient pattern(s)"));
+        assert_eq!(SendPolicy::default().summary(), "send off: draft only");
     }
 
     #[test]

@@ -70,7 +70,7 @@ config:
         type: boolean
         default: false
         ui:
-          label: Allow send (--allow-send)
+          label: Allow send (--allow-send or MAIL_ALLOW_SEND)
           hint: Off means draft only.
       send_allow:
         type: array
@@ -78,7 +78,7 @@ config:
           type: string
         default: []
         ui:
-          label: Allowed recipients (--send-allow)
+          label: Allowed recipients (--send-allow or MAIL_SEND_ALLOW)
           hint: Exact addresses or @domain patterns.
       from_allow:
         type: array
@@ -86,7 +86,7 @@ config:
           type: string
         default: []
         ui:
-          label: Allowed From addresses (--from-allow)
+          label: Allowed From addresses (--from-allow or MAIL_FROM_ALLOW)
           hint: Exact addresses or @domain patterns; empty allows any.
       sent_copy:
         type: boolean

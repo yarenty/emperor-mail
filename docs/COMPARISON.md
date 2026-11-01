@@ -1,6 +1,6 @@
 # emperor-mail next to other mail MCP servers
 
-How emperor-mail 0.1.1 compares with the most popular public MCP servers for e-mail. For the
+How emperor-mail 0.1.2 compares with the most popular public MCP servers for e-mail. For the
 shared background (the 2026-07-28 spec revision, annotations, postmark-mcp, the "lethal
 trifecta") and what every emperor server gets from the framework, see
 [the emperor-mcp comparison](https://github.com/yarenty/emperor-mcp/blob/main/docs/COMPARISON.md).
@@ -22,7 +22,7 @@ its author: the code you install matters as much as its features.
 
 | Server | Stars | Last release | Language | Tools | Mutations | Sending guard | Credentials |
 |---|---|---|---|---|---|---|---|
-| **emperor-mail** | new | 0.1.1, 2026-11-01 | Rust | 6 | `draft` always; `send` only with `--allow-send`; no move or delete | Recipient allow-list (address or `@domain`; with no pattern nobody) and `--from-allow` | Per request in headers (HTTP) or environment (stdio); password, app password or OAuth access token (XOAUTH2); never stored |
+| **emperor-mail** | new | 0.1.2, 2026-11-01 | Rust | 6 | `draft` always; `send` only with `--allow-send` (or `MAIL_ALLOW_SEND`); no move or delete | Recipient allow-list (address or `@domain`; with no pattern nobody) and `--from-allow` | Per request in headers (HTTP) or environment (stdio); password, app password or OAuth access token (XOAUTH2); never stored |
 | [mcp-email-server](https://github.com/Wh1isper/mcp-email-server) | 374 | 1.13.3, 2026-10-25 | Python | 21 | `allowed_mutations`: draft, organize, delete, send, append; **default: all five**; an empty list is read-only | Recipient and sender allow-lists; annotations on every tool | SQLite-backed managed configuration (legacy keyring); no OAuth found (?) |
 | [google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp) | 3.46k | v2.3.0, 2026-10-30 | Python | 120+ (about 15 for Gmail), not re-counted | `--read-only`, tool tiers, per-service permissions | Separate send gating unclear (?) | OAuth 2.1, multi-user |
 | [ms-365-mcp-server](https://github.com/Softeria/ms-365-mcp-server) | 1.10k | v0.178.0, 2026-10-30 | TypeScript | 300+, not re-counted | `--read-only` | – | Device code or OAuth, encrypted token cache |
