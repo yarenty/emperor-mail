@@ -142,7 +142,7 @@ fn html_only_is_converted_and_scripts_dropped() {
 #[test]
 fn html_injection_stays_inside_the_frame() {
     let m = parse_message(&fixture("html-only.eml")).unwrap();
-    let framed = emperor_mcp::frame(emperor_mcp::FrameKind::ExternalWeb, &m.body);
+    let framed = emperor_mcp::frame(emperor_mcp::FrameKind::PrivateCommunication, &m.body);
     // The message tries to close the data block; framing defangs the bare marker.
     assert!(framed.contains("END_DATA_X"), "{framed}");
     let closing = framed
@@ -244,4 +244,134 @@ fn headers_only_parse_for_search_rows() {
         .unwrap_or(raw.len());
     let h = message::parse_headers(&raw[..end]).unwrap();
     assert_eq!(h.subject.as_deref(), Some("Quarterly report ✓"));
+}
+
+/// A zip archive with the given (path, content) entries, stored uncompressed.
+fn zip_of(entries: &[(&str, &str)]) -> Vec<u8> {
+    use std::io::Write;
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (path, content) in entries {
+        w.start_file(*path, opts).unwrap();
+        w.write_all(content.as_bytes()).unwrap();
+    }
+    w.finish().unwrap().into_inner()
+}
+
+/// A minimal Word document: two paragraphs, a tab, a line break and escaped characters.
+fn docx_bytes() -> Vec<u8> {
+    zip_of(&[
+        (
+            "[Content_Types].xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#,
+        ),
+        (
+            "word/document.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Contract</w:t></w:r><w:r><w:tab/><w:t xml:space="preserve">No. 42 </w:t></w:r></w:p><w:p><w:r><w:t>Fees &amp; terms</w:t><w:br/><w:t>apply</w:t></w:r></w:p></w:body></w:document>"#,
+        ),
+    ])
+}
+
+/// A minimal XLSX workbook with one sheet of inline strings and numbers.
+fn xlsx_bytes() -> Vec<u8> {
+    zip_of(&[
+        (
+            "[Content_Types].xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#,
+        ),
+        (
+            "_rels/.rels",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#,
+        ),
+        (
+            "xl/workbook.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Budget" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
+        ),
+        (
+            "xl/worksheets/sheet1.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>item</t></is></c><c r="B1" t="inlineStr"><is><t>amount</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>consulting</t></is></c><c r="B2"><v>4200</v></c></row></sheetData></worksheet>"#,
+        ),
+    ])
+}
+
+/// A minimal OpenDocument spreadsheet.
+fn ods_bytes() -> Vec<u8> {
+    zip_of(&[
+        ("mimetype", "application/vnd.oasis.opendocument.spreadsheet"),
+        (
+            "META-INF/manifest.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2"><manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.spreadsheet"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/></manifest:manifest>"#,
+        ),
+        (
+            "content.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.2"><office:body><office:spreadsheet><table:table table:name="Hours"><table:table-row><table:table-cell office:value-type="string"><text:p>name</text:p></table:table-cell><table:table-cell office:value-type="string"><text:p>hours</text:p></table:table-cell></table:table-row><table:table-row><table:table-cell office:value-type="string"><text:p>ann</text:p></table:table-cell><table:table-cell office:value-type="float" office:value="7.5"><text:p>7.5</text:p></table:table-cell></table:table-row></table:table></office:spreadsheet></office:body></office:document-content>"#,
+        ),
+    ])
+}
+
+#[test]
+fn docx_paragraphs_become_lines() {
+    let text = message::docx_to_text(&docx_bytes()).unwrap();
+    assert_eq!(text, "Contract\tNo. 42 \nFees & terms\napply");
+}
+
+#[test]
+fn xlsx_rows_become_tab_separated_lines() {
+    let text = message::spreadsheet_to_text(&xlsx_bytes()).unwrap();
+    assert!(text.starts_with("## Budget\n"), "{text}");
+    assert!(text.contains("item\tamount\nconsulting\t4200"), "{text}");
+}
+
+#[test]
+fn ods_rows_become_tab_separated_lines() {
+    let text = message::spreadsheet_to_text(&ods_bytes()).unwrap();
+    assert!(text.starts_with("## Hours\n"), "{text}");
+    assert!(text.contains("ann\t7.5"), "{text}");
+}
+
+#[test]
+fn broken_office_files_are_errors_not_panics() {
+    assert!(message::docx_to_text(b"PK\x03\x04 not a zip").is_err());
+    assert!(message::docx_to_text(&zip_of(&[("other.xml", "<a/>")])).is_err());
+    assert!(message::spreadsheet_to_text(b"garbage").is_err());
+}
+
+#[tokio::test]
+async fn office_attachments_through_read_attachment() {
+    let raw = Message::builder()
+        .from("hr@example.com".parse().unwrap())
+        .to("ann@example.net".parse().unwrap())
+        .subject("Documents")
+        .multipart(
+            MultiPart::mixed()
+                .singlepart(SinglePart::plain("See attached.".to_string()))
+                .singlepart(Attachment::new("contract.docx".into()).body(
+                    docx_bytes(),
+                    ContentType::parse(
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+                    .unwrap(),
+                ))
+                .singlepart(Attachment::new("budget.xlsx".into()).body(
+                    xlsx_bytes(),
+                    ContentType::parse("application/octet-stream").unwrap(),
+                ))
+                .singlepart(Attachment::new("hours.ods".into()).body(
+                    ods_bytes(),
+                    ContentType::parse("application/vnd.oasis.opendocument.spreadsheet").unwrap(),
+                )),
+        )
+        .unwrap()
+        .formatted();
+    let docx = attachment_text(raw.clone(), 0, 1000).await.unwrap();
+    assert!(docx.text.unwrap().contains("Fees & terms"));
+    let xlsx = attachment_text(raw.clone(), 1, 1000).await.unwrap();
+    assert!(xlsx.text.unwrap().contains("consulting\t4200"));
+    let ods = attachment_text(raw, 2, 1000).await.unwrap();
+    assert!(ods.text.unwrap().contains("ann\t7.5"));
 }

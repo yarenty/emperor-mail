@@ -20,7 +20,7 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::ClientConfig;
 use tokio_rustls::rustls::pki_types::ServerName;
 
-use crate::config::{Credentials, Endpoint, Security};
+use crate::config::{Auth, Credentials, Endpoint, Secret, Security, xoauth2_initial_response};
 use crate::error::{MailError, Result};
 use crate::message::{self, Headers};
 
@@ -120,7 +120,45 @@ async fn connect_inner(ep: &Endpoint) -> Result<Client<Box<dyn Io>>> {
     }
 }
 
-/// Connect (bounded by [`CONNECT_TIMEOUT`]) and log in.
+/// SASL `XOAUTH2` for `AUTHENTICATE`: the initial response first; to the error challenge a
+/// server sends on failure, an empty response (RFC 7628 style), after which the server says `NO`.
+struct XOAuth2 {
+    response: Option<String>,
+}
+
+impl XOAuth2 {
+    fn new(user: &str, token: &Secret) -> Self {
+        Self {
+            response: Some(xoauth2_initial_response(user, token)),
+        }
+    }
+}
+
+impl async_imap::Authenticator for XOAuth2 {
+    type Response = String;
+
+    fn process(&mut self, _challenge: &[u8]) -> String {
+        self.response.take().unwrap_or_default()
+    }
+}
+
+/// Map a failed LOGIN/AUTHENTICATE: a `NO` answer is the server refusing the credentials.
+pub fn login_error(user: &str, e: async_imap::error::Error) -> MailError {
+    match e {
+        async_imap::error::Error::No(detail) => MailError::AuthRejected {
+            protocol: "IMAP",
+            user: user.to_string(),
+            detail,
+        },
+        other => MailError::Login {
+            user: user.to_string(),
+            detail: other.to_string(),
+        },
+    }
+}
+
+/// Connect (bounded by [`CONNECT_TIMEOUT`]) and log in with a password (`LOGIN`) or an OAuth
+/// token (`AUTHENTICATE XOAUTH2`).
 pub async fn open(creds: &Credentials) -> Result<ImapSession> {
     let client = tokio::time::timeout(CONNECT_TIMEOUT, connect_inner(&creds.imap))
         .await
@@ -128,13 +166,15 @@ pub async fn open(creds: &Credentials) -> Result<ImapSession> {
             what: "IMAP connect",
             after: CONNECT_TIMEOUT,
         })??;
-    client
-        .login(&creds.user, creds.password.expose())
-        .await
-        .map_err(|(e, _)| MailError::Login {
-            user: creds.user.clone(),
-            detail: e.to_string(),
-        })
+    let logged_in = match &creds.auth {
+        Auth::Password(p) => client.login(&creds.user, p.expose()).await,
+        Auth::OAuth(t) => {
+            client
+                .authenticate("XOAUTH2", XOAuth2::new(&creds.user, t))
+                .await
+        }
+    };
+    logged_in.map_err(|(e, _)| login_error(&creds.user, e))
 }
 
 /// Run `op` on a fresh session and log out; the whole call is bounded by [`CALL_TIMEOUT`].
@@ -251,10 +291,61 @@ pub async fn drafts_folder(session: &mut ImapSession) -> Result<String> {
 
 /// Append `bytes` to `folder` flagged `\Draft \Seen`.
 pub async fn append_draft(session: &mut ImapSession, folder: &str, bytes: &[u8]) -> Result<()> {
+    append(session, folder, "(\\Draft \\Seen)", bytes).await
+}
+
+/// Append `bytes` to `folder` with `flags`.
+pub async fn append(
+    session: &mut ImapSession,
+    folder: &str,
+    flags: &str,
+    bytes: &[u8],
+) -> Result<()> {
     session
-        .append(folder, Some("(\\Draft \\Seen)"), None, bytes)
+        .append(folder, Some(flags), None, bytes)
         .await
         .map_err(|e| MailError::Imap(format!("APPEND to {folder} failed: {e}")))
+}
+
+/// Folder names tried, in order, when no folder carries the `\Sent` special use.
+pub const SENT_NAMES: [&str; 4] = ["Sent", "Sent Items", "INBOX.Sent", "Sent Messages"];
+
+/// The sent folder: the `\Sent` special-use folder, else the first of [`SENT_NAMES`] that
+/// exists (case-insensitive). `None` when there is none; it is not created.
+pub async fn sent_folder(session: &mut ImapSession) -> Result<Option<String>> {
+    let folders = list(session).await?;
+    Ok(pick_sent(&folders))
+}
+
+fn pick_sent(folders: &[Listed]) -> Option<String> {
+    if let Some(f) = folders.iter().find(|f| f.special == Some("sent")) {
+        return Some(f.name.clone());
+    }
+    SENT_NAMES.iter().find_map(|want| {
+        folders
+            .iter()
+            .find(|f| f.selectable && f.name.eq_ignore_ascii_case(want))
+            .map(|f| f.name.clone())
+    })
+}
+
+/// Append a sent message to the sent folder, flagged `\Seen`. Returns the folder used.
+pub async fn append_sent(creds: &Credentials, bytes: Vec<u8>) -> Result<String> {
+    with_session(creds, |mut s| async move {
+        let r = async {
+            let folder = sent_folder(&mut s).await?.ok_or_else(|| {
+                MailError::NotFound(format!(
+                    "no sent folder (none marked \\Sent, none named {})",
+                    SENT_NAMES.join(", ")
+                ))
+            })?;
+            append(&mut s, &folder, "(\\Seen)", &bytes).await?;
+            Ok(folder)
+        }
+        .await;
+        (s, r)
+    })
+    .await
 }
 
 async fn open_folder(session: &mut ImapSession, folder: &str, writable: bool) -> Result<()> {
@@ -425,4 +516,54 @@ pub async fn check_login(creds: &Credentials) -> Result<u32> {
         (s, r)
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listed(name: &str, special: Option<&'static str>) -> Listed {
+        Listed {
+            name: name.into(),
+            special,
+            selectable: true,
+        }
+    }
+
+    #[test]
+    fn sent_folder_prefers_special_use_then_names() {
+        let f = [
+            listed("INBOX", None),
+            listed("Sent", None),
+            listed("[Mail]/Sent Mail", Some("sent")),
+        ];
+        assert_eq!(pick_sent(&f).as_deref(), Some("[Mail]/Sent Mail"));
+        let f = [listed("INBOX", None), listed("sent items", None)];
+        assert_eq!(pick_sent(&f).as_deref(), Some("sent items"));
+        let f = [listed("INBOX", None), listed("INBOX.Sent", None)];
+        assert_eq!(pick_sent(&f).as_deref(), Some("INBOX.Sent"));
+        assert_eq!(pick_sent(&[listed("INBOX", None)]), None);
+    }
+
+    #[test]
+    fn imap_no_is_a_credential_rejection() {
+        let e = login_error(
+            "ann",
+            async_imap::error::Error::No("[AUTHENTICATIONFAILED] bad".into()),
+        );
+        assert!(matches!(e, MailError::AuthRejected { .. }), "{e}");
+        let e = login_error("ann", async_imap::error::Error::ConnectionLost);
+        assert!(matches!(e, MailError::Login { .. }), "{e}");
+    }
+
+    #[test]
+    fn xoauth2_answers_once_then_empty() {
+        use async_imap::Authenticator;
+        let mut a = XOAuth2::new("ann@example.org", &Secret::new("fake"));
+        assert_eq!(
+            a.process(b""),
+            "user=ann@example.org\x01auth=Bearer fake\x01\x01"
+        );
+        assert_eq!(a.process(b"{\"status\":\"401\"}"), "");
+    }
 }

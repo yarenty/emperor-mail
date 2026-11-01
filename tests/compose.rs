@@ -24,6 +24,7 @@ fn plain_message_has_x_mailer_and_recipients() {
     assert!(s.contains(&format!("X-Mailer: {X_MAILER}")), "{s}");
     assert!(X_MAILER.starts_with("emperor-mail/"));
     assert!(s.contains("Content-Type: text/plain; charset=utf-8"), "{s}");
+    assert!(s.contains("Content-Type: text/html; charset=utf-8"), "{s}");
     assert!(!s.contains("In-Reply-To"), "{s}");
     assert_eq!(
         built.recipients,
@@ -117,4 +118,49 @@ fn bad_addresses_and_missing_recipients_are_errors() {
     })
     .unwrap_err();
     assert!(bad.to_string().contains("not an address"), "{bad}");
+}
+
+#[test]
+fn markdown_body_is_multipart_alternative() {
+    use mail_parser::{MessageParser, MimeHeaders, PartType};
+
+    let body = "# Plan\n\n**Friday** at noon <script>alert(1)</script>\n\n![x](https://pixel.example/a.gif)\n";
+    let built = build(&Outgoing {
+        from: "ann@example.net".into(),
+        to: vec!["bob@example.org".into()],
+        subject: Some("Plan".into()),
+        body: body.into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let raw = built.bytes();
+    let m = MessageParser::default().parse(&raw).unwrap();
+
+    let root = m.root_part();
+    let ct = root.content_type().unwrap();
+    assert_eq!(ct.ctype(), "multipart");
+    assert_eq!(ct.subtype(), Some("alternative"));
+    let PartType::Multipart(children) = &root.body else {
+        panic!("root is not multipart");
+    };
+    assert_eq!(children.len(), 2);
+
+    let plain = &m.parts[children[0] as usize];
+    let html = &m.parts[children[1] as usize];
+    assert_eq!(plain.content_type().unwrap().subtype(), Some("plain"));
+    assert_eq!(html.content_type().unwrap().subtype(), Some("html"));
+    assert_eq!(plain.text_contents().unwrap().replace("\r\n", "\n"), body);
+    let h = html.text_contents().unwrap();
+    assert!(h.contains("<h1>Plan</h1>"), "{h}");
+    assert!(h.contains("<strong>Friday</strong>"), "{h}");
+    assert!(
+        !h.contains("<script>") && h.contains("&lt;script&gt;"),
+        "{h}"
+    );
+    assert!(!h.contains("<img"), "{h}");
+
+    // read_message shows the text part, as written.
+    let back = parse_message(&raw).unwrap();
+    assert_eq!(back.body_source, "text");
+    assert!(back.body.contains("**Friday** at noon"), "{}", back.body);
 }

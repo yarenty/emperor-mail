@@ -31,6 +31,17 @@ pub enum MailError {
         /// The server's answer.
         detail: String,
     },
+    /// The mail server refused the credentials (IMAP `NO` to LOGIN/AUTHENTICATE, SMTP 534/535).
+    /// Over HTTP this becomes a `401` so the client can ask the user to sign in again.
+    #[error("{protocol} server rejected the credentials for {user}: {detail}")]
+    AuthRejected {
+        /// `IMAP` or `SMTP`.
+        protocol: &'static str,
+        /// The user name (never the password or token).
+        user: String,
+        /// The server's answer.
+        detail: String,
+    },
     /// An IMAP command failed.
     #[error("IMAP: {0}")]
     Imap(String),
@@ -43,6 +54,9 @@ pub enum MailError {
     /// The send policy refused the message.
     #[error("sending refused: {0}")]
     SendRefused(String),
+    /// The `From` address is not allowed by `--from-allow`.
+    #[error("From address refused: {0}")]
+    FromRefused(String),
     /// The upstream did not answer in time.
     #[error("{what} timed out after {after:?}")]
     Timeout {
@@ -66,6 +80,13 @@ impl From<lettre::transport::smtp::Error> for MailError {
     fn from(e: lettre::transport::smtp::Error) -> Self {
         Self::Smtp(e.to_string())
     }
+}
+
+/// True when an SMTP error is the server refusing the credentials: reply 535 (invalid
+/// credentials) or 534 (mechanism too weak, e.g. an app password or OAuth is required).
+pub fn smtp_auth_rejected(e: &lettre::transport::smtp::Error) -> bool {
+    e.status()
+        .is_some_and(|code| matches!(code.to_string().as_str(), "534" | "535"))
 }
 
 /// Result alias.

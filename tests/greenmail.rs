@@ -1,5 +1,6 @@
 //! Live IMAP + SMTP against a GreenMail container: search, read, read an attachment, draft a
-//! reply, send, and the send guard, all through the HTTP server with forwarded headers.
+//! reply, send (Markdown as multipart/alternative), the copy in the sent folder, and the send
+//! guard, all through the HTTP server with the login in forwarded headers.
 //!
 //! Ignored by default because it needs Docker. Run it with:
 //!
@@ -11,7 +12,8 @@
 //! The test starts its own container on random loopback ports with a user name and password made
 //! up for this run, and removes the container at the end. GreenMail's TLS ports use a self-signed
 //! certificate, which emperor-mail rightly refuses, so the test uses the plain ports (allowed
-//! only for loopback hosts).
+//! only for loopback hosts, and only from the environment: the server's environment names the
+//! container, the requests carry the login).
 
 use std::net::SocketAddr;
 use std::process::Command;
@@ -74,14 +76,14 @@ async fn wait_for_port(port: u16) {
     panic!("GreenMail did not open port {port}");
 }
 
-async fn start_server(policy: SendPolicy) -> String {
+async fn start_server(env: Settings, policy: SendPolicy) -> String {
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
         .port();
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let server = MailServer::new(Settings::default(), policy);
+    let server = MailServer::new(env, policy);
     tokio::spawn(serve(
         ServeOptions::new(addr).with_forward(forward_config()),
         move || server.clone(),
@@ -163,27 +165,36 @@ async fn greenmail_end_to_end() {
     wait_for_port(smtp_port).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let headers: Vec<(String, String)> = [
-        (Field::User, user.clone()),
-        (Field::Password, password.clone()),
-        (Field::ImapHost, "127.0.0.1".into()),
+    let endpoints = [
+        (Field::ImapHost, "127.0.0.1".to_string()),
         (Field::ImapPort, imap_port.to_string()),
         (Field::ImapSecurity, "plain".into()),
         (Field::SmtpHost, "127.0.0.1".into()),
         (Field::SmtpPort, smtp_port.to_string()),
         (Field::SmtpSecurity, "plain".into()),
+    ];
+    let env = Settings::from_lookup(|f| {
+        endpoints
+            .iter()
+            .find(|(k, _)| *k == f)
+            .map(|(_, v)| v.clone())
+    });
+    let headers: Vec<(String, String)> = [
+        (Field::User, user.clone()),
+        (Field::Password, password.clone()),
     ]
     .into_iter()
     .map(|(f, v)| (f.header().to_string(), v))
     .collect();
     let creds = Credentials::resolve(
-        &Settings::default(),
+        &env,
         &Settings::from_lookup(|f| {
             headers
                 .iter()
                 .find(|(k, _)| k == f.header())
                 .map(|(_, v)| v.clone())
         }),
+        false,
     )
     .unwrap();
 
@@ -204,7 +215,7 @@ async fn greenmail_end_to_end() {
     .unwrap();
 
     let policy = SendPolicy::new(true, &["@example.test".into()]).unwrap();
-    let base = start_server(policy).await;
+    let base = start_server(env, policy).await;
 
     // list_folders
     let r = call(&base, &headers, "list_folders", json!({})).await;
@@ -279,15 +290,78 @@ async fn greenmail_end_to_end() {
     assert!(raw.contains("Subject: Re: Invoice 2026-117"), "{raw}");
     assert!(raw.contains("X-Mailer: emperor-mail/"), "{raw}");
 
-    // send to an allowed recipient (ourselves), then find it
+    // send without a sent folder: delivered, with a warning instead of a copy
     let r = call(
         &base,
         &headers,
         "send",
-        json!({"to": [user], "subject": "emperor-mail live check", "body": "sent by the test"}),
+        json!({"to": [user], "subject": "emperor-mail first", "body": "no sent folder yet"}),
+    )
+    .await;
+    ok(&r, "send without sent folder");
+    assert_eq!(r["structuredContent"]["sent"], true, "{r}");
+    if r["structuredContent"]["sent_folder"].is_null() {
+        assert!(
+            r["structuredContent"]["warning"]
+                .as_str()
+                .is_some_and(|w| w.contains("sent folder")),
+            "{r}"
+        );
+    }
+
+    // with a Sent folder the exact message is copied there
+    let _ = imap::with_session(&creds, |mut s| async move {
+        let r = s.create("Sent").await.map_err(Into::into);
+        (s, r)
+    })
+    .await;
+    let r = call(
+        &base,
+        &headers,
+        "send",
+        json!({"to": [user], "subject": "emperor-mail live check",
+               "body": "sent by **the test**"}),
     )
     .await;
     ok(&r, "send");
+    let sent_folder = r["structuredContent"]["sent_folder"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no sent copy: {r}"))
+        .to_string();
+    assert!(r["structuredContent"]["warning"].is_null(), "{r}");
+    let message_id = r["structuredContent"]["message_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = call(
+        &base,
+        &headers,
+        "search",
+        json!({"folder": sent_folder, "subject": "live check"}),
+    )
+    .await;
+    ok(&r, "search sent");
+    assert_eq!(r["structuredContent"]["total"], 1, "{r}");
+    let copy_uid = r["structuredContent"]["messages"][0]["uid"]
+        .as_u64()
+        .unwrap() as u32;
+    let copy = imap::with_session(&creds, |mut s| {
+        let folder = sent_folder.clone();
+        async move {
+            let r = imap::fetch_message(&mut s, &folder, copy_uid, false).await;
+            (s, r)
+        }
+    })
+    .await
+    .unwrap();
+    let copy = String::from_utf8_lossy(&copy);
+    assert!(
+        copy.contains(&format!("Message-ID: {message_id}")),
+        "{copy}"
+    );
+    assert!(copy.contains("multipart/alternative"), "{copy}");
+    assert!(copy.contains("<strong>the test</strong>"), "{copy}");
+
     let mut found = Value::Null;
     for _ in 0..40 {
         let r = call(&base, &headers, "search", json!({"subject": "live check"})).await;
@@ -308,11 +382,11 @@ async fn greenmail_end_to_end() {
     )
     .await;
     ok(&r, "read sent");
-    assert!(texts(&r).contains("sent by the test"));
+    assert!(texts(&r).contains("sent by **the test**"));
     let r = call(&base, &headers, "search", json!({"unseen": true})).await;
     assert_eq!(
-        r["structuredContent"]["total"], 1,
-        "mark_read sets \\Seen: {r}"
+        r["structuredContent"]["total"], 2,
+        "mark_read sets \\Seen (the fixture and the first send stay unread): {r}"
     );
 
     // send outside the allow-list is refused

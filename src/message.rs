@@ -16,6 +16,12 @@ const HTML_WIDTH: usize = 100;
 const MAX_PDF_BYTES: usize = 25 * 1024 * 1024;
 /// PDF streams are not inflated past this many bytes in total.
 const MAX_PDF_DECOMPRESSED: usize = 64 * 1024 * 1024;
+/// Largest office file (DOCX, XLSX, ODS, ...) the text extractors will open.
+const MAX_OFFICE_BYTES: usize = 25 * 1024 * 1024;
+/// `word/document.xml` is not inflated past this many bytes.
+const MAX_DOCX_XML: u64 = 64 * 1024 * 1024;
+/// Spreadsheet text stops after this many characters (the caller cuts further).
+const MAX_SHEET_CHARS: usize = 2 * MAX_CHARS;
 
 /// Clamp a requested character limit.
 pub fn clamp_chars(max: Option<usize>) -> usize {
@@ -184,6 +190,106 @@ pub fn pdf_to_text(bytes: &[u8]) -> Result<String> {
         .map_err(|e| MailError::Decode(format!("PDF text could not be extracted: {e}")))
 }
 
+fn office_size_check(kind: &str, bytes: &[u8]) -> Result<()> {
+    if bytes.len() > MAX_OFFICE_BYTES {
+        return Err(MailError::Decode(format!(
+            "{kind} is {} bytes; text is extracted from files up to {MAX_OFFICE_BYTES} bytes",
+            bytes.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Text of a Word document (DOCX): the paragraphs of `word/document.xml`, one per line, tabs
+/// and line breaks kept. CPU-bound: call from `spawn_blocking`.
+pub fn docx_to_text(bytes: &[u8]) -> Result<String> {
+    use quick_xml::events::Event;
+    use std::io::Read;
+
+    office_size_check("DOCX", bytes)?;
+    let bad = |e: &dyn std::fmt::Display| MailError::Decode(format!("DOCX could not be read: {e}"));
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| bad(&e))?;
+    let entry = archive.by_name("word/document.xml").map_err(|e| bad(&e))?;
+    let mut xml = String::new();
+    entry
+        .take(MAX_DOCX_XML)
+        .read_to_string(&mut xml)
+        .map_err(|e| bad(&e))?;
+
+    let mut reader = quick_xml::Reader::from_str(&xml);
+    let mut out = String::new();
+    let mut in_text = false;
+    loop {
+        match reader.read_event().map_err(|e| bad(&e))? {
+            Event::Start(e) if e.local_name().as_ref() == "t" => in_text = true,
+            Event::End(e) => match e.local_name().as_ref() {
+                "t" => in_text = false,
+                "p" => out.push('\n'),
+                _ => {}
+            },
+            Event::Empty(e) => match e.local_name().as_ref() {
+                "tab" => out.push('\t'),
+                "br" | "cr" => out.push('\n'),
+                "p" => out.push('\n'),
+                _ => {}
+            },
+            Event::Text(t) if in_text => out.push_str(&t.xml10_content()),
+            Event::CData(t) if in_text => out.push_str(&t.xml10_content()),
+            Event::GeneralRef(r) if in_text => {
+                if let Ok(Some(c)) = r.resolve_char_ref() {
+                    out.push(c);
+                } else {
+                    out.push_str(match r.xml10_content().as_ref() {
+                        "amp" => "&",
+                        "lt" => "<",
+                        "gt" => ">",
+                        "quot" => "\"",
+                        "apos" => "'",
+                        _ => "",
+                    });
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(out.trim().to_string())
+}
+
+/// Text of a spreadsheet (XLSX, XLSM, XLSB, XLS, ODS): each sheet under a `## <name>` line, one
+/// row per line, cells separated by tabs. CPU-bound: call from `spawn_blocking`.
+pub fn spreadsheet_to_text(bytes: &[u8]) -> Result<String> {
+    use calamine::Reader;
+
+    office_size_check("spreadsheet", bytes)?;
+    let mut book = calamine::open_workbook_auto_from_rs(std::io::Cursor::new(bytes))
+        .map_err(|e| MailError::Decode(format!("spreadsheet could not be opened: {e}")))?;
+    let mut out = String::new();
+    for name in book.sheet_names() {
+        if out.chars().count() > MAX_SHEET_CHARS {
+            break;
+        }
+        let Ok(range) = book.worksheet_range(&name) else {
+            continue;
+        };
+        out.push_str(&format!("## {name}\n"));
+        for row in range.rows() {
+            let line = row
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join("\t");
+            out.push_str(line.trim_end());
+            out.push('\n');
+            if out.len() > MAX_SHEET_CHARS * 4 {
+                break;
+            }
+        }
+        out.push('\n');
+    }
+    Ok(out.trim_end().to_string())
+}
+
 /// Normalise line endings to `\n`.
 fn lf(text: &str) -> String {
     text.replace("\r\n", "\n")
@@ -200,12 +306,32 @@ pub fn truncate(text: &mut String, max: usize) -> bool {
     }
 }
 
-fn is_pdf(info: &AttachmentInfo) -> bool {
-    info.content_type == "application/pdf"
-        || info
-            .name
-            .as_deref()
-            .is_some_and(|n| n.to_ascii_lowercase().ends_with(".pdf"))
+/// Document types whose text the server extracts on the blocking pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DocKind {
+    Pdf,
+    Docx,
+    Sheet,
+}
+
+fn doc_kind(info: &AttachmentInfo) -> Option<DocKind> {
+    let ext = info
+        .name
+        .as_deref()
+        .and_then(|n| n.rsplit_once('.'))
+        .map(|(_, e)| e.to_ascii_lowercase());
+    match (info.content_type.as_str(), ext.as_deref()) {
+        ("application/pdf", _) | (_, Some("pdf")) => Some(DocKind::Pdf),
+        ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", _)
+        | (_, Some("docx")) => Some(DocKind::Docx),
+        ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", _)
+        | ("application/vnd.ms-excel", _)
+        | ("application/vnd.ms-excel.sheet.macroenabled.12", _)
+        | ("application/vnd.ms-excel.sheet.binary.macroenabled.12", _)
+        | ("application/vnd.oasis.opendocument.spreadsheet", _)
+        | (_, Some("xlsx" | "xlsm" | "xlsb" | "xls" | "ods")) => Some(DocKind::Sheet),
+        _ => None,
+    }
 }
 
 fn nested_message_text(m: &mail_parser::Message<'_>) -> String {
@@ -279,8 +405,8 @@ pub fn parse_message(raw: &[u8]) -> Result<ParsedMessage> {
     })
 }
 
-/// Text of attachment `index` of a whole message, cut to `max_chars`. PDF extraction runs on the
-/// blocking pool; a panic inside the PDF parser becomes an error, not a crash.
+/// Text of attachment `index` of a whole message, cut to `max_chars`. PDF, DOCX and spreadsheet
+/// extraction runs on the blocking pool; a panic inside a parser becomes an error, not a crash.
 pub async fn attachment_text(
     raw: Vec<u8>,
     index: usize,
@@ -288,7 +414,7 @@ pub async fn attachment_text(
 ) -> Result<AttachmentText> {
     enum Work {
         Done(Option<String>, Option<String>),
-        Pdf(Vec<u8>),
+        Doc(DocKind, Vec<u8>),
     }
     let (info, work) = {
         let m = parse(&raw)?;
@@ -303,13 +429,13 @@ pub async fn attachment_text(
             PartType::Text(t) => Work::Done(Some(lf(t)), None),
             PartType::Html(h) => Work::Done(Some(html_to_text(h)), None),
             PartType::Message(inner) => Work::Done(Some(nested_message_text(inner)), None),
-            PartType::Binary(b) | PartType::InlineBinary(b) if is_pdf(&info) => {
-                Work::Pdf(b.to_vec())
+            PartType::Binary(b) | PartType::InlineBinary(b) if doc_kind(&info).is_some() => {
+                Work::Doc(doc_kind(&info).unwrap_or(DocKind::Pdf), b.to_vec())
             }
             PartType::Binary(_) | PartType::InlineBinary(_) | PartType::Multipart(_) => Work::Done(
                 None,
                 Some(format!(
-                    "{} is binary; text is extracted from text/*, HTML and PDF attachments only",
+                    "{} is binary; text is extracted from text/*, HTML, PDF, DOCX and spreadsheet attachments only",
                     info.content_type
                 )),
             ),
@@ -318,11 +444,21 @@ pub async fn attachment_text(
     };
     let (text, note) = match work {
         Work::Done(t, n) => (t, n),
-        Work::Pdf(bytes) => match tokio::task::spawn_blocking(move || pdf_to_text(&bytes)).await {
-            Ok(Ok(t)) => (Some(t), None),
-            Ok(Err(e)) => (None, Some(e.to_string())),
-            Err(_) => (None, Some("the PDF parser failed on this file".to_string())),
-        },
+        Work::Doc(kind, bytes) => {
+            let extract = move || match kind {
+                DocKind::Pdf => pdf_to_text(&bytes),
+                DocKind::Docx => docx_to_text(&bytes),
+                DocKind::Sheet => spreadsheet_to_text(&bytes),
+            };
+            match tokio::task::spawn_blocking(extract).await {
+                Ok(Ok(t)) => (Some(t), None),
+                Ok(Err(e)) => (None, Some(e.to_string())),
+                Err(_) => (
+                    None,
+                    Some("the document parser failed on this file".to_string()),
+                ),
+            }
+        }
     };
     let (text, note) = match text {
         Some(mut t) => {
