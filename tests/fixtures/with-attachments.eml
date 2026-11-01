@@ -1,0 +1,51 @@
+From: Billing <billing@example.com>
+To: ann@example.net
+Subject: Invoice 2026-117
+Message-ID: <inv-117@example.com>
+MIME-Version: 1.0
+Date: Sun, 01 Nov 2026 00:17:10 +0000
+Content-Type: multipart/mixed;
+ boundary="vJXBeBOPsEFhxHwc4WodSAoR6wSCMIh4KKxm12mL"
+
+--vJXBeBOPsEFhxHwc4WodSAoR6wSCMIh4KKxm12mL
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+Please find the invoice attached.
+--vJXBeBOPsEFhxHwc4WodSAoR6wSCMIh4KKxm12mL
+Content-Disposition: attachment; filename="invoice-2026-117.pdf"
+Content-Type: application/pdf
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjUKJbutwN4KMSAwIG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbNSAwIFJdL0NvdW50IDEv
+UmVzb3VyY2VzIDMgMCBSL01lZGlhQm94WzAgMCA1OTUgODQyXT4+CmVuZG9iagoyIDAgb2JqCjw8
+L1R5cGUvRm9udC9TdWJ0eXBlL1R5cGUxL0Jhc2VGb250L0hlbHZldGljYT4+CmVuZG9iagozIDAg
+b2JqCjw8L0ZvbnQ8PC9GMSAyIDAgUj4+Pj4KZW5kb2JqCjQgMCBvYmoKPDwvTGVuZ3RoIDYyPj5z
+dHJlYW0KQlQKL0YxIDE0IFRmCjcyIDcyMCBUZAooSW52b2ljZSAyMDI2LTExNyB0b3RhbCBFVVIg
+NDIwMCkgVGoKRVQKZW5kc3RyZWFtIAplbmRvYmoKNSAwIG9iago8PC9UeXBlL1BhZ2UvUGFyZW50
+IDEgMCBSL0NvbnRlbnRzIDQgMCBSPj4KZW5kb2JqCjYgMCBvYmoKPDwvVHlwZS9DYXRhbG9nL1Bh
+Z2VzIDEgMCBSPj4KZW5kb2JqCjcgMCBvYmoKPDwvUm9vdCA2IDAgUi9UeXBlL1hSZWYvU2l6ZSA4
+L1dbMSA0IDJdL0luZGV4WzEgN10vTGVuZ3RoIDQ5Pj5zdHJlYW0KAQAAAA8AAAEAAABoAAABAAAA
+pwAAAQAAAM0AAAEAAAE7AAABAAABdQAAAQAAAaIAAAplbmRzdHJlYW0gCmVuZG9iagoKc3RhcnR4
+cmVmCjQxOAolJUVPRg==
+--vJXBeBOPsEFhxHwc4WodSAoR6wSCMIh4KKxm12mL
+Content-Disposition: attachment; filename="lines.csv"
+Content-Type: text/csv; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+item,amount
+consulting,4200
+
+--vJXBeBOPsEFhxHwc4WodSAoR6wSCMIh4KKxm12mL
+Content-Disposition: attachment; filename="notes.html"
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+<h2>Notes</h2><p>Payment due in <b>30 days</b>.</p>
+--vJXBeBOPsEFhxHwc4WodSAoR6wSCMIh4KKxm12mL
+Content-Disposition: attachment; filename="logo.png"
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgoAAAAA
+--vJXBeBOPsEFhxHwc4WodSAoR6wSCMIh4KKxm12mL--

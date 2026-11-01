@@ -1,0 +1,25 @@
+From: =?UTF-8?Q?Zo=C3=AB_Example?= <zoe@example.org>
+To: Ann <ann@example.net>, bob@example.net
+Cc: team@example.net
+Subject: =?UTF-8?B?UXVhcnRlcmx5IHJlcG9ydCDinJM=?=
+Date: Thu, 29 Oct 2026 09:15:00 +0000
+Message-ID: <alt-1@example.org>
+References: <root-0@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Hi Ann,
+
+The quarterly numbers are attached in the shared folder. Revenue is up 12 =
+percent.
+
+Zo=C3=AB
+--b1
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Hi Ann,</p><p>HTML VERSION SHOULD NOT BE USED</p></body></html>
+--b1--
