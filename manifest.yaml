@@ -2,7 +2,7 @@ name: mail
 type: server
 about:
   title: Email (IMAP/SMTP)
-  description: Search and read email and attachments (PDF, Word, spreadsheets), save drafts, and send to allowed recipients over IMAP and SMTP.
+  description: Search and read email and attachments (PDF, Word, spreadsheets) over IMAP; read-only by default, with drafts (--writable) and sending to allowed recipients over SMTP (--allow-send) switched on by the operator.
   icon: /mcpicons/mail.svg
 meta:
   category: communication
@@ -19,9 +19,9 @@ tools:
   - name: read_attachment
     description: Text of one text, HTML, PDF, DOCX or spreadsheet (XLSX, XLS, ODS) attachment; metadata only for other types.
   - name: draft
-    description: Save a Markdown message (optionally a threaded reply) in the Drafts folder for a person to send.
+    description: Save a Markdown message (optionally a threaded reply) in the Drafts folder for a person to send. Only offered with --writable or --allow-send.
   - name: send
-    description: Send a Markdown message over SMTP and copy it to the Sent folder; only when the server runs with --allow-send and only to allowed recipients.
+    description: Send a Markdown message over SMTP and copy it to the Sent folder, only to allowed recipients. Only offered with --allow-send.
 headers:
   X-Mail-User:
     description: Login name.
@@ -66,12 +66,18 @@ config:
         ui:
           label: Pin servers (--pin-servers)
           hint: Always use IMAP_HOST / SMTP_HOST; ignore server headers.
+      writable:
+        type: boolean
+        default: false
+        ui:
+          label: Allow drafts (--writable or MAIL_WRITABLE)
+          hint: Offers the draft tool. Off means read-only.
       allow_send:
         type: boolean
         default: false
         ui:
           label: Allow send (--allow-send or MAIL_ALLOW_SEND)
-          hint: Off means draft only.
+          hint: Offers the send tool, and draft with it. Off means send is not offered.
       send_allow:
         type: array
         items:

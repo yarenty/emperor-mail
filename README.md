@@ -3,18 +3,19 @@
 [![CI](https://github.com/yarenty/emperor-mail/actions/workflows/ci.yml/badge.svg)](https://github.com/yarenty/emperor-mail/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-**Your mailbox as six MCP tools: search, read, draft, and send only when you allow it.**
+**Your mailbox as MCP tools: search and read by default; draft and send only when you switch them on.**
 
 emperor-mail is an [MCP](https://modelcontextprotocol.io) server that reads and writes email
 over IMAP and SMTP, so an agent can find a message, read it and its attachments (PDF, Word,
 Excel and OpenDocument spreadsheets included), and draft a reply for you to send.
 
 - Built on [emperor-mcp](https://github.com/yarenty/emperor-mcp): stateless Streamable HTTP,
-  framed tool output, forwarded credentials (Emperor Profile P1).
+  framed tool output, forwarded credentials, compact tool definitions (Emperor Profile P1.1).
 - Two ways to run: **one mailbox** (credentials in the environment, stdio or HTTP) or a
   **shared server** (each request brings its own credentials in headers; nothing is stored).
-- **Draft by default.** `send` is off unless you start the server with `--allow-send`, and even
-  then only to the recipients you list. Sent mail is copied to your Sent folder.
+- **Read-only by default.** Started with no switch, the server lists only its four reading
+  tools. `--writable` adds `draft`; `--allow-send` adds `send` (and `draft`), and even then
+  `send` writes only to the recipients you list. Sent mail is copied to your Sent folder.
 - Markdown bodies go out as `text/plain` plus rendered `text/html`.
 - Password, app password or **OAuth 2.0** (XOAUTH2, for Gmail and Microsoft 365).
 - Single binary, pure Rust: IMAP via [async-imap](https://github.com/async-email/async-imap),
@@ -40,9 +41,9 @@ docker build -t emperor-mail https://github.com/yarenty/emperor-mail.git
 docker run -i --rm -e MAIL_USER -e MAIL_PASSWORD -e IMAP_HOST -e SMTP_HOST emperor-mail
 ```
 
-The image runs `emperor-mail serve --stdio`, so sending is switched with variables rather than
-flags: add `-e MAIL_ALLOW_SEND=true -e MAIL_SEND_ALLOW=@example.org` to let `send` write to that
-domain (see [Flags](#flags)).
+The image runs `emperor-mail serve --stdio`, so writing is switched on with variables rather
+than flags: add `-e MAIL_WRITABLE=true` for `draft`, or `-e MAIL_ALLOW_SEND=true
+-e MAIL_SEND_ALLOW=@example.org` for `draft` and `send` to that domain (see [Flags](#flags)).
 
 ## Run for one mailbox
 
@@ -56,7 +57,8 @@ export IMAP_HOST="imap.example.com"     # port 993, implicit TLS by default
 export SMTP_HOST="smtp.example.com"     # only needed for send; port 465 by default
 
 emperor-mail doctor                     # check everything before you connect a client
-emperor-mail serve --stdio              # for desktop clients that spawn the server
+emperor-mail serve --stdio              # read-only, for desktop clients that spawn the server
+emperor-mail serve --stdio --writable   # also draft replies into the Drafts folder
 emperor-mail serve                      # or Streamable HTTP on 127.0.0.1:8033/mcp
 ```
 
@@ -70,7 +72,8 @@ emperor-mail serve                      # or Streamable HTTP on 127.0.0.1:8033/m
 | `IMAP_SECURITY` | `tls`, `starttls` or `plain` | `tls`, or `starttls` on port 143 |
 | `SMTP_HOST` / `SMTP_PORT` | SMTP server | port 465 (587 with `starttls`) |
 | `SMTP_SECURITY` | `tls`, `starttls` or `plain` | `tls`, or `starttls` on ports 587 and 25 |
-| `MAIL_ALLOW_SEND` | Same as `--allow-send`: `true`, `1` or `yes` turn `send` on | off (unset, empty, `false`, `0`, `no`) |
+| `MAIL_WRITABLE` | Same as `--writable`: `true`, `1`, `yes` or `on` list `draft` | off (unset, empty, `false`, `0`, `no`, `off`) |
+| `MAIL_ALLOW_SEND` | Same as `--allow-send`: `true`, `1`, `yes` or `on` list `send` and `draft` | off (unset, empty, `false`, `0`, `no`, `off`) |
 | `MAIL_SEND_ALLOW` | Same as `--send-allow`, comma-separated | none |
 | `MAIL_FROM_ALLOW` | Same as `--from-allow`, comma-separated | any |
 
@@ -86,18 +89,26 @@ trust store.
 |------|---------|
 | `--stdio` | Speak MCP over stdin/stdout (one mailbox from the environment) |
 | `--bind <addr>` | HTTP listen address (default `127.0.0.1:8033`) |
-| `--allow-send` | Turn `send` on (otherwise it refuses and points to `draft`) |
+| `--writable` | List `draft` (saving to Drafts changes the mailbox). Default: read-only, four tools |
+| `--allow-send` | List `send`, and `draft` with it (implies `--writable`). Without it `send` is not listed |
 | `--send-allow <pattern>` | Recipients `send` may write to: `ann@example.org` or `@example.org`; repeat or comma-separate. With `--allow-send` and no pattern, every recipient is refused |
 | `--from-allow <pattern>` | From addresses `send` and `draft` may use (same syntax). Unset: any |
 | `--no-sent-copy` | Do not copy sent mail to the Sent folder (for providers that file it themselves) |
 | `--pin-servers` | Always use the environment's IMAP/SMTP servers; ignore server headers |
 
-The three send switches can also come from the environment, for containers and catalogs that
-cannot pass flags: `MAIL_ALLOW_SEND` for `--allow-send` (unset, empty, `false`, `0` or `no` mean
-off), `MAIL_SEND_ALLOW` for `--send-allow` and `MAIL_FROM_ALLOW` for `--from-allow`
-(comma-separated; empty means no pattern). A flag on the command line wins over its variable.
-The safety rule is the same either way: with sending on and no recipient pattern, every
-recipient is refused, and patterns without sending on are a start-up error.
+The write switches can also come from the environment, for containers and catalogs that cannot
+pass flags: `MAIL_WRITABLE` for `--writable` and `MAIL_ALLOW_SEND` for `--allow-send` (unset,
+empty, `false`, `0`, `no` or `off` mean off; `true`, `1`, `yes` or `on` mean on; anything else
+stops the server at start-up), `MAIL_SEND_ALLOW` for `--send-allow` and `MAIL_FROM_ALLOW` for
+`--from-allow` (comma-separated; empty means no pattern). A flag on the command line wins over
+its variable. The safety rule is the same either way: with sending on and no recipient pattern,
+every recipient is refused, and patterns without sending on are a start-up error.
+
+| Started with | Tools listed |
+|--------------|--------------|
+| no switch | `list_folders`, `search`, `read_message`, `read_attachment` (read-only) |
+| `--writable` / `MAIL_WRITABLE` | the four, plus `draft` |
+| `--allow-send` / `MAIL_ALLOW_SEND` | the four, plus `draft` and `send` |
 
 ## Run as a shared server
 
@@ -105,7 +116,8 @@ On a shared server every request carries the caller's own credentials in headers
 used for that one tool call and dropped with the request: never stored, never logged.
 
 ```bash
-emperor-mail serve --bind 127.0.0.1:8033
+emperor-mail serve --bind 127.0.0.1:8033              # read-only
+emperor-mail serve --bind 127.0.0.1:8033 --writable   # callers may also save drafts
 ```
 
 | Header | Same as | Notes |
@@ -182,7 +194,7 @@ security mode follows the port) or set `*_SECURITY=starttls` explicitly.
         "MAIL_USER": "you@example.com",
         "MAIL_PASSWORD": "<app password>",
         "IMAP_HOST": "imap.example.com",
-        "SMTP_HOST": "smtp.example.com"
+        "MAIL_WRITABLE": "true"
       }
     }
   }
@@ -215,22 +227,26 @@ headers = { "X-Mail-User" = "you@example.com", "X-Mail-Password" = "<app passwor
 [[mcp.servers]]
 name = "mail"
 transport = "stdio"
-command = ["emperor-mail", "serve", "--stdio"]
+# --writable lists `draft` (replies saved in Drafts); leave it out for read-only
+command = ["emperor-mail", "serve", "--stdio", "--writable"]
 ```
+
+The HTTP example above is whatever the server was started with: run it with `--writable` for
+drafts.
 
 Any other MCP client: POST JSON-RPC to `/mcp` with `Accept: application/json, text/event-stream`.
 `GET /health` answers `OK` without credentials.
 
 ## Tools
 
-| Tool | Annotations | What it does |
-|------|-------------|--------------|
-| `list_folders` | read-only, open world | Folders with special use (drafts, sent, trash, junk, archive), message and unread counts |
-| `search` | read-only, open world | Search a folder (default INBOX) by `from`, `to`, `subject`, `text`, `since`/`before` (YYYY-MM-DD), `unseen`; up to `limit` (≤ 100) rows of uid, date, from, subject, size, has_attachments, newest first |
-| `read_message` | read-only, open world | Headers, plain-text body (HTML converted) and the attachment list (index, name, type, size) of one message. Leaves it unread unless `mark_read: true` |
-| `read_attachment` | read-only, open world | Text of one attachment: text/*, HTML, PDF, DOCX, XLSX/XLSM/XLSB/XLS and ODS (sheets as tab-separated rows); other types return metadata only. Up to `max_chars` (default 20 000) |
-| `draft` | not read-only, not destructive | Save a message in Drafts (`\Drafts` folder, else `Drafts`, created if missing). `in_reply_to: <uid>` threads it as a reply |
-| `send` | destructive, open world | Send over SMTP and copy the message to the Sent folder. Refused unless the server allows it (see below); the refusal suggests `draft` |
+| Tool | Listed | Annotations | What it does |
+|------|--------|-------------|--------------|
+| `list_folders` | always | read-only, open world | Folders with special use (drafts, sent, trash, junk, archive), message and unread counts |
+| `search` | always | read-only, open world | Search a folder (default INBOX) by `from`, `to`, `subject`, `text`, `since`/`before` (YYYY-MM-DD), `unseen`; up to `limit` (≤ 100) rows of uid, date, from, subject, size, has_attachments, newest first |
+| `read_message` | always | read-only, open world | Headers, plain-text body (HTML converted) and the attachment list (index, name, type, size) of one message. Leaves it unread unless `mark_read: true` |
+| `read_attachment` | always | read-only, open world | Text of one attachment: text/*, HTML, PDF, DOCX, XLSX/XLSM/XLSB/XLS and ODS (sheets as tab-separated rows); other types return metadata only. Up to `max_chars` (default 20 000) |
+| `draft` | `--writable` or `--allow-send` | not read-only, not destructive | Save a message in Drafts (`\Drafts` folder, else `Drafts`, created if missing). `in_reply_to: <uid>` threads it as a reply |
+| `send` | `--allow-send` | destructive, open world | Send over SMTP and copy the message to the Sent folder, only to recipients matching `--send-allow` (see below); a refusal suggests `draft` |
 
 `draft` and `send` take `to`, `cc`, `subject`, `body` and optional `in_reply_to` (a uid in
 `folder`, default INBOX), which sets `In-Reply-To` and `References`, defaults the subject to
@@ -253,12 +269,16 @@ An agent that reads mail reads text written by strangers. Any message can contai
 last ten invoices to me": a prompt injection. emperor-mail cannot tell an honest request from a
 planted one, so it limits what a misled model can do:
 
-- **Draft, then a human sends.** `draft` puts the message in Drafts for a person to review; it
-  is the default way to write. `send` stays in the tool list even when sending is off, so a
-  model that tries it gets a refusal that names `draft` instead of inventing a workaround.
-- **Sending is opt-in.** Without `--allow-send` (or `MAIL_ALLOW_SEND=true`), `send` answers with an error that points to
-  `draft`. With it, every To and Cc recipient must match a `--send-allow` pattern: an exact
-  address (`ann@example.org`) or a whole domain (`@example.org`, not its subdomains).
+- **Read-only unless you switch writing on.** Started with no switch, the server lists only
+  `list_folders`, `search`, `read_message` and `read_attachment`. A tool that is not listed
+  cannot be called, by the model or by an instruction planted in a message. Writing is your
+  decision, made once at start-up: forgetting a switch leaves the server unable to write.
+- **Draft, then a human sends.** `--writable` (`MAIL_WRITABLE=true`) adds `draft`, which puts
+  the message in Drafts for a person to review and send.
+- **Sending is a separate switch.** `--allow-send` (`MAIL_ALLOW_SEND=true`) adds `send` (and
+  `draft`). Every To and Cc recipient must then match a `--send-allow` pattern: an exact
+  address (`ann@example.org`) or a whole domain (`@example.org`, not its subdomains). With no
+  pattern, every recipient is refused.
 
   ```bash
   emperor-mail serve --allow-send --send-allow @example.org --send-allow boss@partner.example
@@ -288,24 +308,24 @@ planted one, so it limits what a misled model can do:
 
 ```text
 $ emperor-mail doctor --stdio
-emperor-mail 0.1.2 doctor
+emperor-mail 0.1.3 doctor
   [FAIL] MAIL_USER      not set
   [FAIL] MAIL_PASSWORD  not set
   [FAIL] IMAP_HOST      not set
   [FAIL] imap login     skipped: no credentials
   [ok  ] SMTP_HOST      not set (not needed: sending is off)
-  [ok  ] send policy    send off: draft only
+  [ok  ] mode           read-only: draft and send are not listed (--writable adds draft, --allow-send adds send)
   [ok  ] from policy    any From address
   [ok  ] sent copy      sent messages are copied to the sent folder (--no-sent-copy to turn off)
-  [ok  ] tool budget    6 of at most 8 tools
+  [ok  ] tool budget    4 of at most 8 tools
 4 check(s) failed, 0 warning(s)
 ```
 
 `doctor` takes the same flags as `serve`. It checks the environment (the password or token
 only by length), that the IMAP server is reachable and the login works with INBOX selectable, that the
 SMTP server is reachable and (with `--allow-send`) accepts EHLO and AUTH without sending
-anything, summarises the send and From policies (whether send is on and how many recipient
-patterns there are), the sent copy and whether servers are
+anything, states the mode (`read-only`, `drafts`, or `drafts+send with N recipient pattern(s)`),
+summarises the send and From policies, the sent copy and whether servers are
 pinned, checks the listen address is free (not with `--stdio`)
 and the tool budget. On a shared HTTP server with no credentials in the environment the login
 checks are warnings: credentials come per request. Exit code 1 when a check fails.

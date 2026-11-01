@@ -1,5 +1,5 @@
 //! The server over real Streamable HTTP (`emperor_mcp::serve`), as a client sees it: the tool
-//! list, the send guard, credentials arriving in forwarded headers, and the errors a caller gets
+//! list in each mode, the send guard, credentials arriving in forwarded headers, and the errors a caller gets
 //! without them. A small scripted IMAP server on loopback stands in for the mail server so the
 //! test sees exactly what the tool sent upstream.
 
@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use emperor_mail::config::{Field, Settings};
-use emperor_mail::{FromPolicy, MailServer, Options, SendPolicy, forward_config};
+use emperor_mail::{FromPolicy, MailServer, Mode, Options, SendPolicy, forward_config};
 use emperor_mcp::{ServeOptions, serve};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -27,6 +27,19 @@ fn settings(pairs: &[(Field, String)]) -> Settings {
 
 async fn start(env: Settings, policy: SendPolicy) -> String {
     start_with(env, policy, Options::default()).await
+}
+
+/// `--writable`: draft listed, send not.
+fn writable() -> Options {
+    Options {
+        writable: true,
+        ..Options::default()
+    }
+}
+
+/// `--allow-send --send-allow @example.org`: draft and send listed.
+fn sending() -> SendPolicy {
+    SendPolicy::new(true, &["@example.org".into()]).unwrap()
 }
 
 async fn start_with(env: Settings, policy: SendPolicy, options: Options) -> String {
@@ -176,47 +189,74 @@ async fn scripted_imap(accept_login: bool) -> (u16, Arc<Mutex<Vec<String>>>) {
     (port, seen)
 }
 
-#[tokio::test]
-async fn tools_list_has_exactly_six_tools() {
-    let base = start(Settings::default(), SendPolicy::default()).await;
-    let list = rpc(
-        &base,
+async fn list_tools(base: &str) -> Value {
+    rpc(
+        base,
         json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
         &[],
     )
-    .await;
-    let mut names: Vec<&str> = list["result"]["tools"]
+    .await
+}
+
+fn names(list: &Value) -> Vec<String> {
+    let mut names: Vec<String> = list["result"]["tools"]
         .as_array()
         .expect("tools")
         .iter()
-        .filter_map(|t| t["name"].as_str())
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
         .collect();
     names.sort_unstable();
-    assert_eq!(
-        names,
-        [
-            "draft",
-            "list_folders",
-            "read_attachment",
-            "read_message",
-            "search",
-            "send"
-        ]
-    );
-    assert_eq!(MailServer::tool_names().len(), 6);
+    names
+}
+
+const READ: [&str; 4] = ["list_folders", "read_attachment", "read_message", "search"];
+
+#[tokio::test]
+async fn default_lists_the_four_reading_tools() {
+    let list = list_tools(&start(Settings::default(), SendPolicy::default()).await).await;
+    assert_eq!(names(&list), READ);
+    emperor_mcp::testkit::assert_read_only_default_json(&list);
+    emperor_mcp::testkit::assert_read_only_default(&MailServer::tools(Mode::ReadOnly));
+    assert_eq!(MailServer::tool_names(Mode::ReadOnly).len(), 4);
 }
 
 #[tokio::test]
-async fn tools_carry_annotations() {
-    let base = start(Settings::default(), SendPolicy::default()).await;
-    let list = rpc(
-        &base,
-        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
-        &[],
-    )
-    .await;
+async fn writable_adds_draft() {
+    let base = start_with(Settings::default(), SendPolicy::default(), writable()).await;
+    let list = list_tools(&base).await;
+    let mut want = READ.to_vec();
+    want.insert(0, "draft");
+    assert_eq!(names(&list), want);
+    assert_eq!(MailServer::tool_names(Mode::Drafts).len(), 5);
+}
+
+#[tokio::test]
+async fn allow_send_adds_draft_and_send() {
+    // --allow-send alone: draft comes with it.
+    let list = list_tools(&start(Settings::default(), sending()).await).await;
+    let mut want = READ.to_vec();
+    want.insert(0, "draft");
+    want.push("send");
+    assert_eq!(names(&list), want);
+    assert_eq!(MailServer::tool_names(Mode::DraftsAndSend).len(), 6);
+}
+
+#[tokio::test]
+async fn tools_carry_annotations_and_compact_schemas() {
+    for mode in [Mode::ReadOnly, Mode::Drafts, Mode::DraftsAndSend] {
+        let tools = MailServer::tools(mode);
+        emperor_mcp::testkit::assert_tools(&tools);
+        emperor_mcp::testkit::assert_compact_schemas(&tools);
+        assert!(
+            emperor_mcp::testkit::warnings(&tools).is_empty(),
+            "{mode:?}: {:?}",
+            emperor_mcp::testkit::warnings(&tools)
+        );
+    }
+
+    let list = list_tools(&start(Settings::default(), sending()).await).await;
     emperor_mcp::testkit::assert_tools_json(&list);
-    emperor_mcp::testkit::assert_tools(&MailServer::tools());
+    emperor_mcp::testkit::assert_compact_schemas_json(&list);
 
     let tools = list["result"]["tools"].as_array().unwrap();
     let hints = |name: &str| {
@@ -226,7 +266,7 @@ async fn tools_carry_annotations() {
             .map(|t| t["annotations"].clone())
             .unwrap_or_else(|| panic!("no tool {name}"))
     };
-    for name in ["list_folders", "search", "read_message", "read_attachment"] {
+    for name in READ {
         let a = hints(name);
         assert_eq!(a["readOnlyHint"], true, "{name}: {a}");
         assert_eq!(a["openWorldHint"], true, "{name}: {a}");
@@ -240,25 +280,39 @@ async fn tools_carry_annotations() {
     assert_eq!(send["openWorldHint"], true, "{send}");
 }
 
-#[tokio::test]
-async fn send_is_refused_without_allow_send() {
-    let base = start(Settings::default(), SendPolicy::default()).await;
-    let r = call(
-        &base,
-        "send",
-        json!({"to":["bob@example.org"],"subject":"hi","body":"hello"}),
+/// A tool that is not listed cannot be called: the answer is an error, and nothing is written.
+async fn refused(base: &str, tool: &str) -> String {
+    let (_, body) = rpc_raw(
+        base,
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":tool,
+               "arguments":{"to":["bob@example.org"],"subject":"hi","body":"hello"}}}),
         &[],
     )
     .await;
-    assert_eq!(r["isError"], true, "{r}");
-    let t = texts(&r);
-    assert!(t.contains("--allow-send") && t.contains("`draft`"), "{t}");
+    assert!(
+        body.get("error").is_some() || body["result"]["isError"] == true,
+        "{tool}: {body}"
+    );
+    assert_ne!(
+        body["result"]["structuredContent"]["drafted"], true,
+        "{body}"
+    );
+    assert_ne!(body["result"]["structuredContent"]["sent"], true, "{body}");
+    body.to_string()
+}
+
+#[tokio::test]
+async fn write_tools_are_not_callable_without_their_switch() {
+    let base = start(Settings::default(), SendPolicy::default()).await;
+    refused(&base, "draft").await;
+    refused(&base, "send").await;
+    let base = start_with(Settings::default(), SendPolicy::default(), writable()).await;
+    refused(&base, "send").await;
 }
 
 #[tokio::test]
 async fn send_is_refused_for_recipients_outside_the_allow_list() {
-    let policy = SendPolicy::new(true, &["@example.org".into()]).unwrap();
-    let base = start(Settings::default(), policy).await;
+    let base = start(Settings::default(), sending()).await;
     let headers = [
         ("X-Mail-User", "ann@example.org"),
         ("X-Mail-Password", "pw-from-header"),
@@ -436,7 +490,7 @@ async fn from_outside_the_allow_list_is_refused() {
 
 #[tokio::test]
 async fn missing_credentials_are_a_clear_error() {
-    let base = start(Settings::default(), SendPolicy::default()).await;
+    let base = start_with(Settings::default(), SendPolicy::default(), writable()).await;
     for (tool, args) in [
         ("search", json!({})),
         ("read_message", json!({"uid": 1})),

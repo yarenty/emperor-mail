@@ -1,6 +1,8 @@
 //! Live IMAP + SMTP against a GreenMail container: search, read, read an attachment, draft a
 //! reply, send (Markdown as multipart/alternative), the copy in the sent folder, and the send
-//! guard, all through the HTTP server with the login in forwarded headers.
+//! guard, all through the HTTP server with the login in forwarded headers. Reading runs on a
+//! server started with no switch (which refuses draft and send), drafting on one started with
+//! `--writable`, sending on one started with `--allow-send`.
 //!
 //! Ignored by default because it needs Docker. Run it with:
 //!
@@ -20,7 +22,7 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use emperor_mail::config::{Credentials, Field, Settings};
-use emperor_mail::{MailServer, SendPolicy, forward_config, imap};
+use emperor_mail::{MailServer, Options, SendPolicy, forward_config, imap};
 use emperor_mcp::{ServeOptions, serve};
 use serde_json::{Value, json};
 
@@ -76,14 +78,20 @@ async fn wait_for_port(port: u16) {
     panic!("GreenMail did not open port {port}");
 }
 
-async fn start_server(env: Settings, policy: SendPolicy) -> String {
+/// A server as `serve` would start it: `writable` is `--writable`, an enabled `policy` is
+/// `--allow-send`.
+async fn start_server(env: Settings, policy: SendPolicy, writable: bool) -> String {
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
         .port();
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let server = MailServer::new(env, policy);
+    let options = Options {
+        writable,
+        ..Options::default()
+    };
+    let server = MailServer::with_options(env, policy, options);
     tokio::spawn(serve(
         ServeOptions::new(addr).with_forward(forward_config()),
         move || server.clone(),
@@ -163,7 +171,6 @@ async fn greenmail_end_to_end() {
     let smtp_port = host_port(&name, "3025/tcp");
     wait_for_port(imap_port).await;
     wait_for_port(smtp_port).await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
 
     let endpoints = [
         (Field::ImapHost, "127.0.0.1".to_string()),
@@ -204,18 +211,33 @@ async fn greenmail_end_to_end() {
         env!("CARGO_MANIFEST_DIR")
     ))
     .unwrap();
-    imap::with_session(&creds, |mut s| async move {
-        let r = s
-            .append("INBOX", None, None, &fixture)
-            .await
-            .map_err(Into::into);
-        (s, r)
-    })
-    .await
-    .unwrap();
+    // The mapped port can accept before GreenMail greets: retry until it does.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let fixture = fixture.clone();
+        let r = imap::with_session(&creds, |mut s| async move {
+            let r = s
+                .append("INBOX", None, None, &fixture)
+                .await
+                .map_err(Into::into);
+            (s, r)
+        })
+        .await;
+        match r {
+            Ok(()) => break,
+            Err(e) if Instant::now() < deadline => {
+                eprintln!("GreenMail not ready yet: {e}");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(e) => panic!("GreenMail never accepted the fixture: {e}"),
+        }
+    }
 
+    // No switch: read-only. --writable: drafts. --allow-send: drafts and send.
+    let base = start_server(env.clone(), SendPolicy::default(), false).await;
+    let writer = start_server(env.clone(), SendPolicy::default(), true).await;
     let policy = SendPolicy::new(true, &["@example.test".into()]).unwrap();
-    let base = start_server(env, policy).await;
+    let sender = start_server(env, policy, false).await;
 
     // list_folders
     let r = call(&base, &headers, "list_folders", json!({})).await;
@@ -258,9 +280,21 @@ async fn greenmail_end_to_end() {
         texts(&r)
     );
 
-    // draft a reply
+    // without a switch neither draft nor send is offered, and a direct call writes nothing
+    for (server, tool) in [(&base, "draft"), (&base, "send"), (&writer, "send")] {
+        let r = call(
+            server,
+            &headers,
+            tool,
+            json!({"to": [user.clone()], "subject": "no", "body": "no"}),
+        )
+        .await;
+        assert!(r.is_null() || r["isError"] == true, "{tool}: {r}");
+    }
+
+    // draft a reply (--writable)
     let r = call(
-        &base,
+        &writer,
         &headers,
         "draft",
         json!({"in_reply_to": uid, "body": "Paid today."}),
@@ -292,7 +326,7 @@ async fn greenmail_end_to_end() {
 
     // send without a sent folder: delivered, with a warning instead of a copy
     let r = call(
-        &base,
+        &sender,
         &headers,
         "send",
         json!({"to": [user], "subject": "emperor-mail first", "body": "no sent folder yet"}),
@@ -316,7 +350,7 @@ async fn greenmail_end_to_end() {
     })
     .await;
     let r = call(
-        &base,
+        &sender,
         &headers,
         "send",
         json!({"to": [user], "subject": "emperor-mail live check",
@@ -391,7 +425,7 @@ async fn greenmail_end_to_end() {
 
     // send outside the allow-list is refused
     let r = call(
-        &base,
+        &sender,
         &headers,
         "send",
         json!({"to": ["someone@example.com"], "subject": "no", "body": "no"}),

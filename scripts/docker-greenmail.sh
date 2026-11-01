@@ -6,9 +6,10 @@
 # GreenMail and emperor-mail share one network namespace (--network container:...), so the
 # mail server is on localhost and the plain IMAP/SMTP ports are allowed (plain is loopback only;
 # GreenMail's TLS ports use a self-signed certificate that emperor-mail rightly refuses). The
-# user name and password are made up for this run. Checks: doctor passes, the send switches are
-# read from the environment, and an MCP session (initialize, tools/list, list_folders) writes
-# only JSON-RPC to stdout and the tool call succeeds.
+# user name and password are made up for this run. Checks: doctor passes, MAIL_WRITABLE and
+# MAIL_ALLOW_SEND are read from the environment and switch draft and send on and off (4, 5 or 6
+# tools listed), and an MCP session (initialize, tools/list, list_folders) writes only JSON-RPC to
+# stdout and the tool call succeeds.
 set -euo pipefail
 
 IMAGE="${1:-emperor-mail:test}"
@@ -47,15 +48,53 @@ for i in $(seq 1 60); do
   sleep 2
 done
 cat "$WORK/doctor.txt"
-grep -q "send off: draft only" "$WORK/doctor.txt"
+grep -q "mode .*read-only" "$WORK/doctor.txt"
+grep -q "4 of at most 8 tools" "$WORK/doctor.txt"
 if grep -q "$PASS" "$WORK/doctor.txt"; then echo "doctor printed the password"; exit 1; fi
 
-echo "== send switches from the environment"
-doctor -e MAIL_ALLOW_SEND=false -e MAIL_SEND_ALLOW= >"$WORK/d.txt" 2>&1 || { cat "$WORK/d.txt"; exit 1; }
-grep -q "send off: draft only" "$WORK/d.txt"
-doctor -e MAIL_ALLOW_SEND=true -e MAIL_SEND_ALLOW=@example.test,boss@example.org >"$WORK/d.txt" 2>&1 \
-  || { cat "$WORK/d.txt"; exit 1; }
-grep -q "send on, 2 recipient pattern(s)" "$WORK/d.txt" || { cat "$WORK/d.txt"; exit 1; }
+echo "== write switches from the environment"
+# expect_doctor <grep pattern> <tool count> [docker -e args...]
+expect_doctor() {
+  local pattern=$1 tools=$2; shift 2
+  doctor "$@" >"$WORK/d.txt" 2>&1 || { echo "doctor failed: $*"; cat "$WORK/d.txt"; exit 1; }
+  grep -q "$pattern" "$WORK/d.txt" || { echo "no '$pattern' with $*"; cat "$WORK/d.txt"; exit 1; }
+  grep -q "$tools of at most 8 tools" "$WORK/d.txt" \
+    || { echo "not $tools tools with $*"; cat "$WORK/d.txt"; exit 1; }
+}
+expect_doctor "mode .*read-only" 4 -e MAIL_WRITABLE=false -e MAIL_ALLOW_SEND=false -e MAIL_SEND_ALLOW=
+expect_doctor "mode .*read-only" 4 -e MAIL_WRITABLE= -e MAIL_ALLOW_SEND=0
+expect_doctor "mode .*drafts:" 5 -e MAIL_WRITABLE=true
+expect_doctor "mode .*drafts+send with 2 recipient pattern(s)" 6 \
+  -e MAIL_ALLOW_SEND=true -e MAIL_SEND_ALLOW=@example.test,boss@example.org
+expect_doctor "every recipient is refused" 6 -e MAIL_ALLOW_SEND=yes
+# A typo is refused at start-up, never read as on.
+if doctor -e MAIL_WRITABLE=maybe >"$WORK/d.txt" 2>&1; then
+  echo "MAIL_WRITABLE=maybe was accepted"; cat "$WORK/d.txt"; exit 1
+fi
+
+# tools/list over stdio, without a mail call: list_tools [docker -e args...] -> names, sorted
+list_tools() {
+  # stdin stays open a moment so the server answers before it sees end of input
+  { printf '%s\n' \
+      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"docker-greenmail","version":"0"}}}' \
+      '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+      '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+    sleep 3; } \
+    | run "$@" "$IMAGE" 2>/dev/null \
+    | jq -r 'select(.id == 2) | [.result.tools[].name] | sort | join(",")'
+}
+expect_tools() {
+  local want=$1; shift
+  local got
+  got="$(list_tools "$@")"
+  [ "$got" = "$want" ] || { echo "tools with $*: got '$got', want '$want'"; exit 1; }
+  echo "  $* -> $got"
+}
+READ="list_folders,read_attachment,read_message,search"
+expect_tools "$READ"
+expect_tools "$READ" -e MAIL_WRITABLE=off -e MAIL_ALLOW_SEND=false
+expect_tools "draft,$READ" -e MAIL_WRITABLE=1
+expect_tools "draft,$READ,send" -e MAIL_ALLOW_SEND=true -e MAIL_SEND_ALLOW=@example.test
 
 echo "== MCP over stdio"
 mkfifo "$WORK/in"
@@ -91,7 +130,7 @@ while IFS= read -r line; do
     || { echo "not JSON-RPC on stdout: $line"; exit 1; }
 done <"$WORK/out.jsonl"
 jq -e 'select(.id == 1) | .result.protocolVersion == "2025-06-18"' "$WORK/out.jsonl" >/dev/null
-jq -e 'select(.id == 2) | (.result.tools | length) == 6' "$WORK/out.jsonl" >/dev/null
+jq -e 'select(.id == 2) | (.result.tools | length) == 4' "$WORK/out.jsonl" >/dev/null
 jq -e 'select(.id == 3) | .result.isError == false' "$WORK/out.jsonl" >/dev/null \
   || { echo "list_folders failed"; exit 1; }
 jq -e 'select(.id == 3) | .result.content | map(.text // "") | join("\n") | test("INBOX")' \

@@ -10,7 +10,7 @@ RUN cargo build --release --locked \
     && strip target/release/emperor-mail
 
 FROM debian:bookworm-slim
-ARG VERSION=0.1.2
+ARG VERSION=0.1.3
 LABEL org.opencontainers.image.title="emperor-mail" \
       org.opencontainers.image.description="MCP server for email: search, read, draft and (guarded) send over IMAP and SMTP" \
       org.opencontainers.image.version="${VERSION}" \

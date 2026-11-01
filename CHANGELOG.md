@@ -4,6 +4,22 @@ All notable changes to emperor-mail. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-01
+
+> Read-only by default: writing is switched on by the operator.
+
+### Added
+- **`--writable` / `MAIL_WRITABLE`** - lists `draft`. Without it the server is read-only and lists four tools: `list_folders`, `search`, `read_message`, `read_attachment`.
+- **Mode in the start-up log and `doctor`** - `read-only`, `drafts`, or `drafts+send with N recipient pattern(s)`.
+
+### Changed
+- **`draft` now needs `--writable`** (or `MAIL_WRITABLE=true`). Saving to Drafts changes the mailbox, so it is a write and is off by default. Add `--writable` to keep drafting as before.
+- **`send` is listed only with `--allow-send`** (or `MAIL_ALLOW_SEND=true`), which also lists `draft`. Before, `send` was always listed and refused when sending was off. The recipient rules are unchanged: with sending on and no `--send-allow` pattern, every recipient is refused.
+- **Switch values are checked** - `MAIL_WRITABLE` and `MAIL_ALLOW_SEND` accept `true`/`1`/`yes`/`on` and `false`/`0`/`no`/`off` (or empty); anything else stops the server at start-up instead of being read as on.
+- **Smaller tool definitions** - compact input schemas (no `$schema`, no `null` alternatives on optional arguments, no integer formats). `tools/list` is 2.8 KB read-only, 4.0 KB with `--writable` and 5.1 KB with `--allow-send`, down from 6.1 KB.
+- **emperor-mcp 0.4** and Emperor Profile P1.1.
+- **Registry metadata** - `server.json` adds `--writable` and `MAIL_WRITABLE`.
+
 ## [0.1.2] - 2026-11-01
 
 ### Added
@@ -45,7 +61,8 @@ All notable changes to emperor-mail. The format follows [Keep a Changelog](https
 - TLS through rustls and the operating system's trust store; STARTTLS supported; unencrypted connections only to loopback hosts named in the environment.
 - Prebuilt binaries for macOS (arm64, x86_64), Linux x86_64 and Windows x86_64 on each tagged release, with build provenance attestations and a `SHA256SUMS` file.
 
-[Unreleased]: https://github.com/yarenty/emperor-mail/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/yarenty/emperor-mail/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/yarenty/emperor-mail/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/yarenty/emperor-mail/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/yarenty/emperor-mail/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/yarenty/emperor-mail/releases/tag/v0.1.0
