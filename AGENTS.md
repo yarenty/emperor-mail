@@ -4,22 +4,22 @@
 
 ## Scope
 
-An **MCP server for email** (IMAP + SMTP) built on [`emperor-mcp`](https://github.com/yarenty/emperor-mcp) 0.2 with an rmcp 3.8 `#[tool_router]` server: stateless Streamable HTTP at `/mcp` + `/health` through `emperor_mcp::serve`, or stdio (`serve --stdio`) through rmcp's `transport-io`. Exactly **six tools** (`list_folders`, `search`, `read_message`, `read_attachment`, `draft`, `send`), inside the framework's 3–8 budget. emperor-mcp comes from crates.io.
+An **MCP server for email** (IMAP + SMTP) built on [`emperor-mcp`](https://github.com/yarenty/emperor-mcp) 0.3 with an rmcp 3.8 `#[tool_router]` server: stateless Streamable HTTP at `/mcp` + `/health` through `emperor_mcp::serve`, or stdio (`serve --stdio`) through rmcp's `transport-io`. Exactly **six tools** (`list_folders`, `search`, `read_message`, `read_attachment`, `draft`, `send`), inside the framework's 3–8 budget. emperor-mcp comes from crates.io.
 
 Layout (one crate, binary + library so tests can drive it):
 
-- `src/main.rs` — clap CLI: `serve` and `doctor`, both taking `--bind`, `--allow-send`, `--send-allow`, `--stdio`.
-- `src/server.rs` — `MailServer` and the six tools. Thin: resolve credentials, one IMAP/SMTP call, frame the result.
-- `src/config.rs` — `Settings` (one source: env or headers), `Credentials::resolve` (the only place the two meet), `Endpoint`/`Security`, `HEADER_NAMES` and `forward_config()`, `Secret`.
-- `src/imap.rs` — connect (TLS / STARTTLS / loopback-only plain), `with_session` (one connection per call, timeouts), list/search/fetch/append.
-- `src/smtp.rs` — lettre transport per send, `check` for doctor.
-- `src/message.rs` — mail-parser: headers, body (HTML → text), attachment list, attachment text (PDF on the blocking pool).
-- `src/compose.rs` — lettre `Message` for draft and send; `X-Mailer`, reply threading.
+- `src/main.rs` — clap CLI: `serve` and `doctor`, both taking `--bind`, `--allow-send`, `--send-allow`, `--from-allow`, `--no-sent-copy`, `--pin-servers`, `--stdio`.
+- `src/server.rs` — `MailServer`, `Options` and the six tools with their annotations. Thin: resolve credentials, one IMAP/SMTP call, frame the result. `done` turns `MailError::AuthRejected` into `emperor_mcp::credentials_rejected` (HTTP 401), every other error into an `isError` result.
+- `src/config.rs` — `Settings` (one source: env or headers), `Credentials::resolve` (the only place the two meet), `Auth` (password or OAuth token), `xoauth2_initial_response`, `Endpoint`/`Security`, `HEADER_NAMES` and `forward_config()`, `Secret`.
+- `src/imap.rs` — connect (TLS / STARTTLS / loopback-only plain), `LOGIN` or `AUTHENTICATE XOAUTH2`, `with_session` (one connection per call, timeouts), list/search/fetch/append, drafts and sent folder lookup.
+- `src/smtp.rs` — lettre transport per send (PLAIN/LOGIN or XOAUTH2), `send` of the exact bytes, `check` for doctor.
+- `src/message.rs` — mail-parser: headers, body (HTML → text), attachment list, attachment text (PDF, DOCX and spreadsheets on the blocking pool).
+- `src/compose.rs` — lettre `Message` for draft and send: Markdown body as `multipart/alternative` (text as written + HTML from pulldown-cmark), `X-Mailer`, reply threading.
 - `src/search.rs` — tool arguments → IMAP `SEARCH` keys (quoting, CR/LF refusal, dates).
-- `src/policy.rs` — `SendPolicy` (`--allow-send`, `--send-allow` patterns).
+- `src/policy.rs` — `SendPolicy` (`--allow-send`, `--send-allow`) and `FromPolicy` (`--from-allow`), one pattern syntax.
 - `src/doctor.rs` — the `doctor` report on `emperor_mcp::doctor`.
 
-Tests: unit tests in each module; `tests/parsing.rs` (fixture `.eml` files in `tests/fixtures/`), `tests/compose.rs` (MIME out, parsed back), `tests/http.rs` (real HTTP through `emperor_mcp::serve`, a scripted IMAP server on loopback records what the tool sent), `tests/greenmail.rs` (`#[ignore]`: live IMAP/SMTP against a GreenMail container the test starts and removes).
+Tests: unit tests in each module; `tests/parsing.rs` (fixture `.eml` files in `tests/fixtures/`), `tests/compose.rs` (MIME out, parsed back), `tests/http.rs` (real HTTP through `emperor_mcp::serve`: tool annotations checked with `emperor_mcp::testkit` on a live `tools/list`; a scripted IMAP server on loopback records what the tool sent, including LOGIN, XOAUTH2 and the 401 on refused credentials), `tests/greenmail.rs` (`#[ignore]`: live IMAP/SMTP against a GreenMail container the test starts and removes, including the Sent copy).
 
 ## Before you change code
 
@@ -28,14 +28,19 @@ Tests: unit tests in each module; `tests/parsing.rs` (fixture `.eml` files in `t
 
 ## Conventions
 
-- **One `Credentials`, two sources.** Environment and forwarded headers both become `Settings`; `Credentials::resolve` is the only merge point. User and password always come as a pair from one source; an endpoint set in the environment pins the server and header endpoints are ignored. Never add a third path, a default credential or a "test mode" (Emperor Profile E7). New header names go into `Field` and `HEADER_NAMES` together (a unit test checks they agree).
-- **Credentials are never stored or logged** (E6). `Secret` has no `Display` and a redacted `Debug`; errors name the user, never the password; doctor shows the password's length only. Do not log tool arguments wholesale (they may contain mail content).
+- **One `Credentials`, two sources.** Environment and forwarded headers both become `Settings`; `Credentials::resolve` is the only merge point. The login (user plus exactly one of password and OAuth token) comes whole from one source. Endpoints follow the login: a header login may name its servers in headers (falling back to the environment); an environment login never uses header endpoints; `--pin-servers` makes the environment win for everyone. A header endpoint is never `plain`. Never add a third path, a default credential or a "test mode" (Emperor Profile E7). New header names go into `Field` and `HEADER_NAMES` together, all `X-Mail-*` (a unit test checks they agree).
+- **Credentials are never stored or logged** (E6). `Secret` (password and token) has no `Display` and a redacted `Debug`; errors name the user, never the secret; doctor shows the secret's length only. The server never obtains or refreshes OAuth tokens; the client does.
+- **Refused credentials are a 401.** IMAP `NO` to LOGIN/AUTHENTICATE and SMTP 534/535 become `MailError::AuthRejected`, which `server::done` returns as `credentials_rejected` (JSON-RPC `-32040`, HTTP 401 through `emperor_mcp::serve`). Any other failure stays an `isError` result. Do not log tool arguments wholesale (they may contain mail content).
 - **Stateless.** One IMAP connection per tool call via `imap::with_session` (connect timeout, whole-call timeout, logout). No connection pool, no cache across calls, nothing per user in `MailServer`.
 - **Reading never changes the mailbox** unless asked: `EXAMINE` + `BODY.PEEK[...]`; only `mark_read: true` uses `SELECT` + `BODY[]`.
-- **Sending is guarded.** `send` checks `SendPolicy` before resolving credentials when sending is off, and on the final recipient list (after reply defaults) when it is on. `draft` is never restricted. Every outgoing message goes through `compose::build`, which adds `X-Mailer`.
-- **Framing** (E8): bodies and attachment text `FrameKind::ExternalWeb` (anyone can send mail); lists and metadata JSON `FrameKind::Computed` (`structured_framed`). Message bodies never go into `structured_content` unframed. Errors are `isError: true` results with a plain `error: …` line.
+- **Sending is guarded.** `send` checks `SendPolicy` before resolving credentials when sending is off, and on the final recipient list (after reply defaults) when it is on. `draft` is never restricted by recipient. Both check `FromPolicy` on the From address. Every outgoing message goes through `compose::build`, which adds `X-Mailer`.
+- **`send` stays in the tool list when sending is off.** This is deliberate. Hiding it would make the tool list depend on server flags and leave a model that wants to send with nothing to try, so it improvises (asks the user to paste into a mail client, retries through other tools). A visible `send` that refuses with "sending is disabled … use `draft`" steers it to the safe path in one step, and the annotations (`destructiveHint: true`) let clients gate it. Do not make the tool list conditional.
+- **Sent copy.** After a successful SMTP send the exact bytes sent are appended (`\Seen`) to the `\Sent` folder, else the first of `imap::SENT_NAMES`. A missing folder or failed append is a `warning` in the result, never a send failure. `--no-sent-copy` turns it off (Gmail, Exchange Online file sent mail themselves).
+- **Outgoing HTML** comes only from `compose::markdown_to_html`: raw HTML events are escaped as text and images become links. Never pass HTML through and never emit `<img>`: an injected instruction could hide data in an image URL the recipient's client would fetch.
+- **Annotations** (checked by `emperor_mcp::testkit` in `tests/http.rs`): reading tools `readOnlyHint: true, openWorldHint: true`; `draft` not read-only, not destructive; `send` destructive and open-world. A changed or new tool keeps them explicit.
+- **Framing** (E8): bodies and attachment text `FrameKind::PrivateCommunication` (written by other people, addressed to the user, may carry instructions); lists and metadata JSON `FrameKind::Computed` (`structured_framed`). Message bodies never go into `structured_content` unframed. Errors are `isError: true` results with a plain `error: …` line.
 - **Untrusted input to IMAP** goes through `search::quote` (escapes `\` and `"`, refuses CR/LF/NUL). Mailbox names go through async-imap's own quoting. New SEARCH keys get a test in `src/search.rs`, including an injection case.
-- **CPU-bound work** (PDF extraction) runs in `spawn_blocking`; a panic in the parser becomes a tool error.
+- **CPU-bound work** (PDF, DOCX, spreadsheet extraction) runs in `spawn_blocking`; a panic in a parser becomes a tool error. Office files are size-capped before opening and `word/document.xml` is read through a byte limit.
 - **TLS** is rustls with the ring provider and `rustls-platform-verifier` (OS trust store). There is no "accept invalid certificates" option and there must not be one; `plain` is for loopback only.
 - **Tool budget**: six. A new capability that needs a seventh or more tools is a separate server (split by noun), not a bigger one.
 - Licence is dual `MIT OR Apache-2.0`; keep `Cargo.toml`, the README badge and licence section in agreement. Contributions are signed off (DCO, see `CONTRIBUTING.md`).
@@ -49,6 +54,9 @@ Tests: unit tests in each module; `tests/parsing.rs` (fixture `.eml` files in `t
 | Parsing | `mail-parser` 0.11 (Stalwart Labs) | Robust MIME, RFC 2047 words, legacy charsets (ISO-8859-x, Windows-125x) without extra features. 1.0 needs Rust 1.98; move when the MSRV does. |
 | SMTP | `lettre` 0.11 (no pool) | Builder for MIME + In-Reply-To/References; implicit TLS and STARTTLS; rustls with the platform verifier. |
 | PDF | `lopdf` 0.46 (no default features) | Pure Rust text extraction with a decompression limit. |
+| Markdown → HTML | `pulldown-cmark` 0.13 (no default features, `html`) | The reference CommonMark parser in Rust; events let us escape raw HTML and turn images into links. |
+| DOCX | `zip` + `quick-xml` (both already under calamine) | Paragraph text from `word/document.xml` in ~50 lines; no extra crate in the tree. |
+| Spreadsheets | `calamine` 0.37 (no default features) | Widely used, pure Rust; XLSX, XLSM, XLSB, XLS and ODS through one API; MSRV 1.88. |
 | HTML | `html2text` 0.17 | Maintained (regular releases), html5ever parser, drops `<script>`/`<style>`, keeps links as footnotes. A hand-written tag stripper gets entities, `<br>`, tables and scripts wrong; this one is only a fallback when html2text fails. |
 
 ## Documentation closure (mandatory)

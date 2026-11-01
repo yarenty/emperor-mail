@@ -1,11 +1,17 @@
 //! Building outgoing messages (drafts and sends) with lettre.
 //!
 //! Every message carries `X-Mailer: emperor-mail/<version>` so a recipient or an auditor can tell
-//! which messages an agent wrote. The body is sent as UTF-8 `text/plain`; Markdown stays readable
-//! as it is.
+//! which messages an agent wrote. The body is Markdown and goes out as `multipart/alternative`:
+//! `text/plain` with the Markdown as written (readable as it is) and `text/html` rendered from it.
+//!
+//! The HTML rendering takes no raw HTML from the body: HTML blocks and inline tags are escaped
+//! and shown as text. Images become plain links, so a message never makes the recipient's mail
+//! client fetch a URL on opening (a model steered by injected text could otherwise hide data in an
+//! image URL).
 
-use lettre::message::header::{ContentType, Header, HeaderName, HeaderValue};
-use lettre::message::{Mailbox, Message};
+use lettre::message::header::{Header, HeaderName, HeaderValue};
+use lettre::message::{Mailbox, Message, MultiPart};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 use crate::error::{MailError, Result};
 
@@ -54,7 +60,7 @@ pub struct Outgoing {
     pub cc: Vec<String>,
     /// Subject (for a reply, defaults to `Re: <original>`).
     pub subject: Option<String>,
-    /// Plain-text or Markdown body.
+    /// Markdown body (plain text is valid Markdown).
     pub body: String,
     /// Set when replying.
     pub reply: Option<ReplyTo>,
@@ -69,6 +75,37 @@ fn mailbox(field: &str, s: &str) -> Result<Mailbox> {
 fn bracket(id: &str) -> String {
     let id = id.trim().trim_start_matches('<').trim_end_matches('>');
     format!("<{id}>")
+}
+
+/// Render Markdown to an HTML fragment. Raw HTML in the input is escaped, images become links.
+pub fn markdown_to_html(markdown: &str) -> String {
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let events = Parser::new_ext(markdown, options).map(|event| match event {
+        Event::Html(raw) | Event::InlineHtml(raw) => Event::Text(raw),
+        Event::Start(Tag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }),
+        Event::End(TagEnd::Image) => Event::End(TagEnd::Link),
+        other => other,
+    });
+    let mut html = String::with_capacity(markdown.len() * 3 / 2);
+    pulldown_cmark::html::push_html(&mut html, events);
+    html
+}
+
+fn html_document(fragment: &str) -> String {
+    format!(
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"></head><body>\n{fragment}</body></html>\n"
+    )
 }
 
 /// A built message plus the bare recipient addresses (for the send policy and the SMTP envelope).
@@ -118,7 +155,6 @@ pub fn build(o: &Outgoing) -> Result<Built> {
         .subject(subject)
         .date_now()
         .message_id(None)
-        .header(ContentType::TEXT_PLAIN)
         .header(XMailer(X_MAILER.to_string()));
     let mut recipients = Vec::new();
     for t in &to {
@@ -138,11 +174,42 @@ pub fn build(o: &Outgoing) -> Result<Built> {
         refs.push(bracket(id));
         b = b.in_reply_to(bracket(id)).references(refs.join(" "));
     }
+    let html = html_document(&markdown_to_html(&o.body));
     let message = b
-        .body(o.body.clone())
+        .multipart(MultiPart::alternative_plain_html(o.body.clone(), html))
         .map_err(|e| MailError::InvalidArgument(format!("message could not be built: {e}")))?;
     Ok(Built {
         message,
         recipients,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_renders() {
+        let h = markdown_to_html("# Hi\n\n**bold** and *it*\n\n- a\n- b\n");
+        assert!(h.contains("<h1>Hi</h1>"), "{h}");
+        assert!(h.contains("<strong>bold</strong>"), "{h}");
+        assert!(h.contains("<li>a</li>"), "{h}");
+    }
+
+    #[test]
+    fn raw_html_is_escaped() {
+        let h = markdown_to_html("hi <script>alert(1)</script>\n\n<div onclick=x>block</div>\n");
+        assert!(!h.contains("<script>") && !h.contains("<div"), "{h}");
+        assert!(h.contains("&lt;script&gt;") && h.contains("&lt;div"), "{h}");
+    }
+
+    #[test]
+    fn images_become_links() {
+        let h = markdown_to_html("![pixel](https://tracker.example/p.gif?d=secret)");
+        assert!(!h.contains("<img"), "{h}");
+        assert!(
+            h.contains(r#"<a href="https://tracker.example/p.gif?d=secret">pixel</a>"#),
+            "{h}"
+        );
+    }
 }

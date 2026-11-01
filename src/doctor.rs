@@ -7,7 +7,7 @@ use std::time::Duration;
 use emperor_mcp::doctor::{Check, Report, env_set, port_free, tcp_reachable, tool_budget};
 
 use crate::config::{Credentials, Field, Settings};
-use crate::policy::SendPolicy;
+use crate::policy::{FromPolicy, SendPolicy};
 use crate::server::MailServer;
 use crate::{imap, smtp};
 
@@ -20,6 +20,12 @@ pub struct Plan {
     pub bind: Option<SocketAddr>,
     /// Send policy from the flags.
     pub policy: SendPolicy,
+    /// `--from-allow` patterns.
+    pub from_policy: FromPolicy,
+    /// Sent messages are copied to the sent folder.
+    pub sent_copy: bool,
+    /// `--pin-servers`.
+    pub pin_servers: bool,
 }
 
 /// Run every check.
@@ -36,11 +42,15 @@ pub async fn run(env: &Settings, plan: &Plan) -> Report {
     // Credentials.
     if env.has_login() || !http {
         r.push(env_set(Field::User.env(), false));
-        r.push(env_set(Field::Password.env(), true));
+        if env.get(Field::OauthToken).is_some() {
+            r.push(env_set(Field::OauthToken.env(), true));
+        } else {
+            r.push(env_set(Field::Password.env(), true));
+        }
     } else {
         r.push(per_request(
             "MAIL_USER/MAIL_PASSWORD",
-            "X-Mail-User / X-Mail-Password headers",
+            "X-Mail-User with X-Mail-Password or X-Mail-Oauth-Token headers",
         ));
     }
 
@@ -48,12 +58,15 @@ pub async fn run(env: &Settings, plan: &Plan) -> Report {
     let imap_host = env.get(Field::ImapHost);
     match imap_host {
         Some(_) => r.push(env_set(Field::ImapHost.env(), false)),
-        None if http => r.push(per_request(Field::ImapHost.env(), "X-Imap-Host header")),
+        None if http => r.push(per_request(
+            Field::ImapHost.env(),
+            "X-Mail-Imap-Host header",
+        )),
         None => r.push(env_set(Field::ImapHost.env(), false)),
     };
 
     // Resolve the env source alone: the same code path tool calls use.
-    let creds = Credentials::resolve(env, &Settings::default());
+    let creds = Credentials::resolve(env, &Settings::default(), true);
     let endpoints = match &creds {
         Ok(c) => Some((c.imap.clone(), c.smtp.clone())),
         Err(_) => None,
@@ -73,8 +86,10 @@ pub async fn run(env: &Settings, plan: &Plan) -> Report {
             Ok(n) => Check::pass(
                 "imap login",
                 format!(
-                    "logged in to {} as {}; INBOX has {n} message(s)",
-                    c.imap, c.user
+                    "logged in to {} as {} ({}); INBOX has {n} message(s)",
+                    c.imap,
+                    c.user,
+                    c.auth.kind()
                 ),
             ),
             Err(e) => Check::fail("imap login", e.to_string()),
@@ -109,7 +124,10 @@ pub async fn run(env: &Settings, plan: &Plan) -> Report {
             ));
         }
         None if plan.policy.enabled => {
-            r.push(per_request(Field::SmtpHost.env(), "X-Smtp-Host header"));
+            r.push(per_request(
+                Field::SmtpHost.env(),
+                "X-Mail-Smtp-Host header",
+            ));
         }
         None => {
             r.push(Check::pass(
@@ -125,6 +143,27 @@ pub async fn run(env: &Settings, plan: &Plan) -> Report {
     } else {
         Check::pass("send policy", plan.policy.summary())
     });
+
+    r.push(Check::pass("from policy", plan.from_policy.summary()));
+    r.push(Check::pass(
+        "sent copy",
+        if plan.sent_copy {
+            "sent messages are copied to the sent folder (--no-sent-copy to turn off)"
+        } else {
+            "off (--no-sent-copy)"
+        },
+    ));
+    if http {
+        r.push(Check::pass(
+            "server endpoints",
+            if plan.pin_servers {
+                "pinned: IMAP/SMTP servers come from the environment only"
+            } else {
+                "a caller with its own login may name its servers in X-Mail-Imap-*/X-Mail-Smtp-* \
+                 headers (TLS only); --pin-servers to forbid"
+            },
+        ));
+    }
 
     // Listen address.
     if let Some(bind) = plan.bind {

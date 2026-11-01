@@ -20,8 +20,8 @@ pub mod smtp;
 
 pub use config::{Credentials, Settings, forward_config};
 pub use error::MailError;
-pub use policy::SendPolicy;
-pub use server::MailServer;
+pub use policy::{FromPolicy, SendPolicy};
+pub use server::{MailServer, Options};
 
 /// Initialise logging to **stderr** (stdout carries the protocol in stdio mode), filtered by
 /// `RUST_LOG`, default `info`.

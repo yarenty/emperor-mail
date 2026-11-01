@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use emperor_mail::config::{Field, Settings};
-use emperor_mail::{MailServer, SendPolicy, forward_config};
+use emperor_mail::{FromPolicy, MailServer, Options, SendPolicy, forward_config};
 use emperor_mcp::{ServeOptions, serve};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -26,8 +26,12 @@ fn settings(pairs: &[(Field, String)]) -> Settings {
 }
 
 async fn start(env: Settings, policy: SendPolicy) -> String {
+    start_with(env, policy, Options::default()).await
+}
+
+async fn start_with(env: Settings, policy: SendPolicy, options: Options) -> String {
     let addr = SocketAddr::from(([127, 0, 0, 1], free_port()));
-    let server = MailServer::new(env, policy);
+    let server = MailServer::with_options(env, policy, options);
     let options = ServeOptions::new(addr).with_forward(forward_config());
     tokio::spawn(serve(options, move || server.clone()));
     let base = format!("http://{addr}");
@@ -40,7 +44,8 @@ async fn start(env: Settings, policy: SendPolicy) -> String {
     panic!("server did not start");
 }
 
-async fn rpc(base: &str, body: Value, headers: &[(&str, &str)]) -> Value {
+/// POST one JSON-RPC message; returns the HTTP status and the JSON body.
+async fn rpc_raw(base: &str, body: Value, headers: &[(&str, &str)]) -> (u16, Value) {
     let mut req = reqwest::Client::new()
         .post(format!("{base}/mcp"))
         .header("Accept", "application/json, text/event-stream")
@@ -50,7 +55,7 @@ async fn rpc(base: &str, body: Value, headers: &[(&str, &str)]) -> Value {
         req = req.header(*k, *v);
     }
     let resp = req.send().await.unwrap();
-    assert!(resp.status().is_success(), "status {}", resp.status());
+    let status = resp.status().as_u16();
     let text = resp.text().await.unwrap();
     let json = text
         .lines()
@@ -58,7 +63,24 @@ async fn rpc(base: &str, body: Value, headers: &[(&str, &str)]) -> Value {
         .unwrap_or(&text)
         .trim()
         .to_string();
-    serde_json::from_str(&json).unwrap_or_else(|e| panic!("bad body {text}: {e}"))
+    let value = serde_json::from_str(&json).unwrap_or_else(|e| panic!("bad body {text}: {e}"));
+    (status, value)
+}
+
+async fn rpc(base: &str, body: Value, headers: &[(&str, &str)]) -> Value {
+    let (status, value) = rpc_raw(base, body, headers).await;
+    assert!((200..300).contains(&status), "status {status}: {value}");
+    value
+}
+
+/// Environment that points IMAP at a loopback test server (plain is allowed only from the
+/// environment, and only for loopback).
+fn loopback_imap(port: u16) -> Settings {
+    settings(&[
+        (Field::ImapHost, "127.0.0.1".into()),
+        (Field::ImapPort, port.to_string()),
+        (Field::ImapSecurity, "plain".into()),
+    ])
 }
 
 async fn call(base: &str, tool: &str, args: Value, headers: &[(&str, &str)]) -> Value {
@@ -104,6 +126,21 @@ async fn scripted_imap(accept_login: bool) -> (u16, Arc<Mutex<Vec<String>>>) {
                     .unwrap();
                 while let Ok(Some(line)) = lines.next_line().await {
                     log.lock().unwrap().push(line.clone());
+                    if line.to_ascii_uppercase().contains(" AUTHENTICATE ") {
+                        let tag = line.split(' ').next().unwrap_or("*").to_string();
+                        w.write_all(b"+ \r\n").await.unwrap();
+                        let Ok(Some(resp)) = lines.next_line().await else {
+                            break;
+                        };
+                        log.lock().unwrap().push(format!("SASL {resp}"));
+                        let reply = if accept_login {
+                            format!("{tag} OK authenticated\r\n")
+                        } else {
+                            format!("{tag} NO [AUTHENTICATIONFAILED] invalid token\r\n")
+                        };
+                        w.write_all(reply.as_bytes()).await.unwrap();
+                        continue;
+                    }
                     let mut parts = line.splitn(3, ' ');
                     let tag = parts.next().unwrap_or("*").to_string();
                     let cmd = parts.next().unwrap_or("").to_ascii_uppercase();
@@ -170,6 +207,40 @@ async fn tools_list_has_exactly_six_tools() {
 }
 
 #[tokio::test]
+async fn tools_carry_annotations() {
+    let base = start(Settings::default(), SendPolicy::default()).await;
+    let list = rpc(
+        &base,
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        &[],
+    )
+    .await;
+    emperor_mcp::testkit::assert_tools_json(&list);
+    emperor_mcp::testkit::assert_tools(&MailServer::tools());
+
+    let tools = list["result"]["tools"].as_array().unwrap();
+    let hints = |name: &str| {
+        tools
+            .iter()
+            .find(|t| t["name"] == name)
+            .map(|t| t["annotations"].clone())
+            .unwrap_or_else(|| panic!("no tool {name}"))
+    };
+    for name in ["list_folders", "search", "read_message", "read_attachment"] {
+        let a = hints(name);
+        assert_eq!(a["readOnlyHint"], true, "{name}: {a}");
+        assert_eq!(a["openWorldHint"], true, "{name}: {a}");
+    }
+    let draft = hints("draft");
+    assert_eq!(draft["readOnlyHint"], false, "{draft}");
+    assert_eq!(draft["destructiveHint"], false, "{draft}");
+    let send = hints("send");
+    assert_eq!(send["readOnlyHint"], false, "{send}");
+    assert_eq!(send["destructiveHint"], true, "{send}");
+    assert_eq!(send["openWorldHint"], true, "{send}");
+}
+
+#[tokio::test]
 async fn send_is_refused_without_allow_send() {
     let base = start(Settings::default(), SendPolicy::default()).await;
     let r = call(
@@ -191,8 +262,8 @@ async fn send_is_refused_for_recipients_outside_the_allow_list() {
     let headers = [
         ("X-Mail-User", "ann@example.org"),
         ("X-Mail-Password", "pw-from-header"),
-        ("X-Imap-Host", "imap.example.org"),
-        ("X-Smtp-Host", "smtp.example.org"),
+        ("X-Mail-Imap-Host", "imap.example.org"),
+        ("X-Mail-Smtp-Host", "smtp.example.org"),
     ];
     let r = call(
         &base,
@@ -213,14 +284,10 @@ async fn send_is_refused_for_recipients_outside_the_allow_list() {
 #[tokio::test]
 async fn header_credentials_reach_the_mail_server() {
     let (port, seen) = scripted_imap(true).await;
-    let base = start(Settings::default(), SendPolicy::default()).await;
-    let port = port.to_string();
+    let base = start(loopback_imap(port), SendPolicy::default()).await;
     let headers = [
         ("X-Mail-User", "ann@example.net"),
         ("X-Mail-Password", "s3cret \"quoted\""),
-        ("X-Imap-Host", "127.0.0.1"),
-        ("X-Imap-Port", port.as_str()),
-        ("X-Imap-Security", "plain"),
     ];
     let r = call(&base, "list_folders", json!({}), &headers).await;
     assert_eq!(r["isError"], false, "{r}");
@@ -250,19 +317,48 @@ async fn header_credentials_reach_the_mail_server() {
 }
 
 #[tokio::test]
-async fn operator_endpoint_pins_the_host() {
+async fn oauth_token_logs_in_with_xoauth2() {
+    use base64::Engine;
     let (port, seen) = scripted_imap(true).await;
-    let env = settings(&[
-        (Field::ImapHost, "127.0.0.1".into()),
-        (Field::ImapPort, port.to_string()),
-        (Field::ImapSecurity, "plain".into()),
-    ]);
-    let base = start(env, SendPolicy::default()).await;
+    let base = start(loopback_imap(port), SendPolicy::default()).await;
+    let headers = [
+        ("X-Mail-User", "ann@example.net"),
+        ("X-Mail-Oauth-Token", "fake-access-token"),
+    ];
+    let r = call(&base, "list_folders", json!({}), &headers).await;
+    assert_eq!(r["isError"], false, "{r}");
+    let lines = seen.lock().unwrap().clone();
+    assert!(
+        lines.iter().any(|l| l.ends_with("AUTHENTICATE XOAUTH2")),
+        "{lines:?}"
+    );
+    assert!(!lines.iter().any(|l| l.contains("LOGIN")), "{lines:?}");
+    let sasl = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("SASL "))
+        .expect("SASL response");
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(sasl.trim())
+        .unwrap();
+    assert_eq!(
+        decoded,
+        b"user=ann@example.net\x01auth=Bearer fake-access-token\x01\x01"
+    );
+}
+
+#[tokio::test]
+async fn pinned_servers_ignore_header_hosts() {
+    let (port, seen) = scripted_imap(true).await;
+    let options = Options {
+        pin_servers: true,
+        ..Options::default()
+    };
+    let base = start_with(loopback_imap(port), SendPolicy::default(), options).await;
     let headers = [
         ("X-Mail-User", "bob"),
         ("X-Mail-Password", "pw"),
-        // Ignored: the operator pinned the IMAP server.
-        ("X-Imap-Host", "192.0.2.1"),
+        // Ignored: the operator pinned the servers.
+        ("X-Mail-Imap-Host", "192.0.2.1"),
     ];
     let r = call(&base, "list_folders", json!({}), &headers).await;
     assert_eq!(r["isError"], false, "{r}");
@@ -270,22 +366,72 @@ async fn operator_endpoint_pins_the_host() {
 }
 
 #[tokio::test]
-async fn refused_login_is_reported_without_the_password() {
+async fn refused_login_is_a_401_without_the_password() {
     let (port, _) = scripted_imap(false).await;
-    let base = start(Settings::default(), SendPolicy::default()).await;
-    let port = port.to_string();
+    let base = start(loopback_imap(port), SendPolicy::default()).await;
     let headers = [
         ("X-Mail-User", "ann@example.net"),
         ("X-Mail-Password", "do-not-echo-me"),
-        ("X-Imap-Host", "localhost"),
-        ("X-Imap-Port", port.as_str()),
-        ("X-Imap-Security", "plain"),
     ];
-    let r = call(&base, "search", json!({"subject":"x"}), &headers).await;
-    assert_eq!(r["isError"], true, "{r}");
-    let t = texts(&r);
-    assert!(t.contains("login as ann@example.net failed"), "{t}");
-    assert!(!t.contains("do-not-echo-me"), "{t}");
+    let (status, body) = rpc_raw(
+        &base,
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+               "params":{"name":"search","arguments":{"subject":"x"}}}),
+        &headers,
+    )
+    .await;
+    assert_eq!(status, 401, "{body}");
+    assert_eq!(body["error"]["code"], -32040, "{body}");
+    let text = body.to_string();
+    assert!(text.contains("IMAP server"), "{text}");
+    assert!(!text.contains("do-not-echo-me"), "{text}");
+
+    // A refused OAuth token is the same 401.
+    let headers = [
+        ("X-Mail-User", "ann@example.net"),
+        ("X-Mail-Oauth-Token", "expired-fake-token"),
+    ];
+    let (status, body) = rpc_raw(
+        &base,
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+               "params":{"name":"list_folders","arguments":{}}}),
+        &headers,
+    )
+    .await;
+    assert_eq!(status, 401, "{body}");
+    assert!(!body.to_string().contains("expired-fake-token"), "{body}");
+}
+
+#[tokio::test]
+async fn from_outside_the_allow_list_is_refused() {
+    let options = Options {
+        from_policy: FromPolicy::new(&["@example.net".into()]).unwrap(),
+        ..Options::default()
+    };
+    let policy = SendPolicy::new(true, &["@example.org".into()]).unwrap();
+    let base = start_with(Settings::default(), policy, options).await;
+    let headers = [
+        ("X-Mail-User", "ann@example.net"),
+        ("X-Mail-Password", "pw"),
+        ("X-Mail-From", "ceo@example.com"),
+        ("X-Mail-Imap-Host", "imap.example.net"),
+        ("X-Mail-Smtp-Host", "smtp.example.net"),
+    ];
+    for tool in ["draft", "send"] {
+        let r = call(
+            &base,
+            tool,
+            json!({"to":["bob@example.org"],"subject":"hi","body":"x"}),
+            &headers,
+        )
+        .await;
+        assert_eq!(r["isError"], true, "{tool}: {r}");
+        let t = texts(&r);
+        assert!(
+            t.contains("ceo@example.com") && t.contains("@example.net"),
+            "{tool}: {t}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -316,17 +462,17 @@ async fn missing_credentials_are_a_clear_error() {
 }
 
 #[tokio::test]
-async fn plain_to_a_remote_host_is_refused() {
+async fn plain_from_headers_is_refused() {
     let base = start(Settings::default(), SendPolicy::default()).await;
     let headers = [
         ("X-Mail-User", "ann@example.net"),
         ("X-Mail-Password", "pw"),
-        ("X-Imap-Host", "imap.example.org"),
-        ("X-Imap-Security", "plain"),
+        ("X-Mail-Imap-Host", "imap.example.org"),
+        ("X-Mail-Imap-Security", "plain"),
     ];
     let r = call(&base, "list_folders", json!({}), &headers).await;
     assert_eq!(r["isError"], true, "{r}");
-    assert!(texts(&r).contains("loopback"), "{r}");
+    assert!(texts(&r).contains("tls or starttls only"), "{r}");
 }
 
 #[tokio::test]

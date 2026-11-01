@@ -3,7 +3,11 @@
 //! Sending is off unless the server was started with `--allow-send`, and then only to recipients
 //! that match a `--send-allow` pattern: an exact address (`ann@example.org`) or a whole domain
 //! (`@example.org`, no subdomains). Every recipient (To and Cc) must match. `draft` is never
-//! restricted: a draft waits in the Drafts folder for a human.
+//! restricted by recipient: a draft waits in the Drafts folder for a human.
+//!
+//! [`FromPolicy`] (`--from-allow`, same pattern syntax) limits the `From` address of both `send`
+//! and `draft`, so a caller on a shared server cannot write as someone else through
+//! `X-Mail-From`.
 
 use crate::error::{MailError, Result};
 
@@ -17,12 +21,17 @@ pub enum Pattern {
 }
 
 impl Pattern {
-    /// Parse `user@domain` or `@domain`.
+    /// Parse `user@domain` or `@domain` (a `--send-allow` pattern).
     pub fn parse(s: &str) -> Result<Self> {
+        Self::parse_for("send-allow", s)
+    }
+
+    /// Parse `user@domain` or `@domain`; `flag` names the option in the error.
+    pub fn parse_for(flag: &str, s: &str) -> Result<Self> {
         let s = s.trim().to_ascii_lowercase();
         let invalid = || {
             MailError::Config(format!(
-                "send-allow pattern {s:?} must be an address (ann@example.org) or a domain (@example.org)"
+                "{flag} pattern {s:?} must be an address (ann@example.org) or a domain (@example.org)"
             ))
         };
         let (local, domain) = s.split_once('@').ok_or_else(invalid)?;
@@ -114,11 +123,7 @@ impl SendPolicy {
         if self.patterns.is_empty() {
             "none configured".to_string()
         } else {
-            self.patterns
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
+            join(&self.patterns)
         }
     }
 
@@ -130,6 +135,59 @@ impl SendPolicy {
             "send on, but no --send-allow pattern: every recipient is refused".to_string()
         } else {
             format!("send on, to {}", self.describe_patterns())
+        }
+    }
+}
+
+fn join(patterns: &[Pattern]) -> String {
+    patterns
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Which `From` addresses `send` and `draft` may use (`--from-allow`). Empty: any.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FromPolicy {
+    /// `--from-allow` patterns.
+    pub patterns: Vec<Pattern>,
+}
+
+impl FromPolicy {
+    /// Build from the CLI flag.
+    pub fn new(patterns: &[String]) -> Result<Self> {
+        Ok(Self {
+            patterns: patterns
+                .iter()
+                .map(|p| Pattern::parse_for("from-allow", p))
+                .collect::<Result<_>>()?,
+        })
+    }
+
+    /// Refuse a `From` address that matches no pattern (when there are patterns).
+    pub fn check(&self, from: &str) -> Result<()> {
+        let address = from
+            .rsplit_once('<')
+            .map(|(_, rest)| rest.trim_end().trim_end_matches('>'))
+            .unwrap_or(from);
+        if self.patterns.is_empty() || self.patterns.iter().any(|p| p.matches(address)) {
+            Ok(())
+        } else {
+            Err(MailError::FromRefused(format!(
+                "{address} is not an allowed From address on this server ({}); set X-Mail-From \
+                 or MAIL_FROM to an allowed address",
+                join(&self.patterns)
+            )))
+        }
+    }
+
+    /// One line for doctor and the start-up log.
+    pub fn summary(&self) -> String {
+        if self.patterns.is_empty() {
+            "any From address".to_string()
+        } else {
+            format!("From limited to {}", join(&self.patterns))
         }
     }
 }
@@ -192,5 +250,19 @@ mod tests {
             Pattern::parse("@localhost").unwrap(),
             Pattern::Domain("localhost".into())
         );
+    }
+
+    #[test]
+    fn from_policy() {
+        assert!(FromPolicy::default().check("anyone@example.net").is_ok());
+        let p = FromPolicy::new(&["@corp.example".into(), "ceo@other.example".into()]).unwrap();
+        assert!(p.check("ann@corp.example").is_ok());
+        assert!(p.check("Ann <ANN@corp.example>").is_ok());
+        assert!(p.check("ceo@other.example").is_ok());
+        let err = p.check("eve@evil.example").unwrap_err();
+        assert!(matches!(err, MailError::FromRefused(_)), "{err}");
+        assert!(p.check("x@sub.corp.example").is_err());
+        let err = FromPolicy::new(&["corp.example".into()]).unwrap_err();
+        assert!(err.to_string().contains("from-allow"), "{err}");
     }
 }
