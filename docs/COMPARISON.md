@@ -22,7 +22,7 @@ its author: the code you install matters as much as its features.
 
 | Server | Stars | Last release | Language | Tools | Mutations | Sending guard | Credentials |
 |---|---|---|---|---|---|---|---|
-| **emperor-mail** | new | 0.1.2, 2026-11-01 | Rust | 6 | `draft` always; `send` only with `--allow-send` (or `MAIL_ALLOW_SEND`); no move or delete | Recipient allow-list (address or `@domain`; with no pattern nobody) and `--from-allow` | Per request in headers (HTTP) or environment (stdio); password, app password or OAuth access token (XOAUTH2); never stored |
+| **emperor-mail** | new | 0.1.3, 2026-11-01 | Rust | 4 to 6 | none by default; `draft` with `--writable`; `send` (and `draft`) with `--allow-send`; no move or delete | Recipient allow-list (address or `@domain`; with no pattern nobody) and `--from-allow` | Per request in headers (HTTP) or environment (stdio); password, app password or OAuth access token (XOAUTH2); never stored |
 | [mcp-email-server](https://github.com/Wh1isper/mcp-email-server) | 374 | 1.13.3, 2026-10-25 | Python | 21 | `allowed_mutations`: draft, organize, delete, send, append; **default: all five**; an empty list is read-only | Recipient and sender allow-lists; annotations on every tool | SQLite-backed managed configuration (legacy keyring); no OAuth found (?) |
 | [google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp) | 3.46k | v2.3.0, 2026-10-30 | Python | 120+ (about 15 for Gmail), not re-counted | `--read-only`, tool tiers, per-service permissions | Separate send gating unclear (?) | OAuth 2.1, multi-user |
 | [ms-365-mcp-server](https://github.com/Softeria/ms-365-mcp-server) | 1.10k | v0.178.0, 2026-10-30 | TypeScript | 300+, not re-counted | `--read-only` | – | Device code or OAuth, encrypted token cache |
@@ -30,8 +30,9 @@ its author: the code you install matters as much as its features.
 
 ## emperor-mail: pros
 
-- **Draft by default.** `draft` saves to the Drafts folder for a person to review. `send` refuses
-  unless the server was started with `--allow-send`, and even then every To and Cc recipient must
+- **Read-only by default.** With no switch only the four reading tools are listed; a write tool
+  that is not listed cannot be called. `--writable` adds `draft`, which saves to the Drafts folder
+  for a person to review. `--allow-send` adds `send`, and even then every To and Cc recipient must
   match a `--send-allow` pattern; with none, every recipient is refused. That is stricter than
   mcp-email-server's default, which allows all five mutation classes, send and delete included.
 - **The sender is limited too.** `--from-allow` stops a caller from writing as someone else.
@@ -49,7 +50,8 @@ its author: the code you install matters as much as its features.
 - **Reading changes nothing**: folders opened read-only, messages fetched with `BODY.PEEK`.
 - **Shared server**: one HTTP server can serve many users and providers; IMAP and SMTP hosts may
   come from headers (TLS only, and only with the caller's own login), or be pinned.
-- **6 tools** instead of 21 to 300, annotated, tested live against GreenMail in CI.
+- **4 to 6 tools** instead of 21 to 300, annotated, with compact schemas (`tools/list` is 2.8 KB
+  read-only), tested live against GreenMail in CI.
 - **One Rust binary with provenance** instead of an npm or PyPI package: a smaller supply-chain
   target after postmark-mcp.
 
@@ -62,8 +64,6 @@ its author: the code you install matters as much as its features.
   more work for a desktop user than google_workspace_mcp or ms-365-mcp-server, which run the flow.
 - **IMAP and SMTP only**: no Gmail labels or Microsoft Graph features (categories, focused inbox,
   calendar).
-- `send` stays listed even when sending is off (deliberate: its refusal points the model to
-  `draft`), so the tool list does not shrink like the other emperor servers' do.
 - New, with no users yet.
 
 ## Where a competitor is better

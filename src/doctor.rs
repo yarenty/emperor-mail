@@ -1,5 +1,6 @@
 //! `emperor-mail doctor`: checks configuration, credentials (never printed), the IMAP and SMTP
-//! servers, the send policy, the listen address and the tool budget.
+//! servers, the mode (which write tools are listed), the send policy, the listen address and the
+//! tool budget.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -7,7 +8,7 @@ use std::time::Duration;
 use emperor_mcp::doctor::{Check, Report, env_set, port_free, tcp_reachable, tool_budget};
 
 use crate::config::{Credentials, Field, Settings};
-use crate::policy::{FromPolicy, SendPolicy};
+use crate::policy::{FromPolicy, Mode, SendPolicy};
 use crate::server::MailServer;
 use crate::{imap, smtp};
 
@@ -18,6 +19,8 @@ const REACH_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct Plan {
     /// HTTP bind address (`None` in stdio mode).
     pub bind: Option<SocketAddr>,
+    /// Read-only, drafts, or drafts and send (`--writable`, `--allow-send`).
+    pub mode: Mode,
     /// Send policy from the flags.
     pub policy: SendPolicy,
     /// `--from-allow` patterns.
@@ -137,12 +140,16 @@ pub async fn run(env: &Settings, plan: &Plan) -> Report {
         }
     }
 
-    // Send policy.
-    r.push(if plan.policy.enabled && plan.policy.patterns.is_empty() {
-        Check::warn("send policy", plan.policy.summary())
+    // Mode and send policy.
+    let mode = plan.mode.summary(&plan.policy);
+    r.push(if plan.mode.sends() && plan.policy.patterns.is_empty() {
+        Check::warn("mode", mode)
     } else {
-        Check::pass("send policy", plan.policy.summary())
+        Check::pass("mode", mode)
     });
+    if plan.mode.sends() {
+        r.push(Check::pass("send policy", plan.policy.summary()));
+    }
 
     r.push(Check::pass("from policy", plan.from_policy.summary()));
     r.push(Check::pass(
@@ -170,6 +177,6 @@ pub async fn run(env: &Settings, plan: &Plan) -> Report {
         r.push(port_free(bind));
     }
 
-    r.push(tool_budget(MailServer::tool_names().len()));
+    r.push(tool_budget(MailServer::tool_names(plan.mode).len()));
     r
 }

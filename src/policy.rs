@@ -1,9 +1,14 @@
-//! Who `send` may write to.
+//! What the server may write, and who `send` may write to.
 //!
-//! Sending is off unless the server was started with `--allow-send` (or `MAIL_ALLOW_SEND`), and
-//! then only to recipients that match a `--send-allow` (`MAIL_SEND_ALLOW`) pattern: an exact address (`ann@example.org`) or a whole domain
-//! (`@example.org`, no subdomains). Every recipient (To and Cc) must match. `draft` is never
-//! restricted by recipient: a draft waits in the Drafts folder for a human.
+//! [`Mode`] is fixed at start-up. By default the server only reads: `draft` and `send` are not
+//! listed. `--writable` (`MAIL_WRITABLE`) adds `draft`; `--allow-send` (`MAIL_ALLOW_SEND`) adds
+//! `send` and implies `--writable`.
+//!
+//! With sending on, `send` writes only to recipients that match a `--send-allow`
+//! (`MAIL_SEND_ALLOW`) pattern: an exact address (`ann@example.org`) or a whole domain
+//! (`@example.org`, no subdomains). Every recipient (To and Cc) must match; no pattern refuses
+//! every recipient. `draft` is never restricted by recipient: a draft waits in the Drafts folder
+//! for a human.
 //!
 //! [`FromPolicy`] (`--from-allow`, same pattern syntax) limits the `From` address of both `send`
 //! and `draft`, so a caller on a shared server cannot write as someone else through
@@ -72,6 +77,64 @@ impl std::fmt::Display for Pattern {
     }
 }
 
+/// What the server may write, fixed at start-up. It decides which tools are listed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// No switch: the four reading tools only.
+    #[default]
+    ReadOnly,
+    /// `--writable`: adds `draft`.
+    Drafts,
+    /// `--allow-send`: adds `draft` and `send`.
+    DraftsAndSend,
+}
+
+impl Mode {
+    /// The mode for the start-up switches: sending on implies writable.
+    pub fn new(writable: bool, policy: &SendPolicy) -> Self {
+        if policy.enabled {
+            Self::DraftsAndSend
+        } else if writable {
+            Self::Drafts
+        } else {
+            Self::ReadOnly
+        }
+    }
+
+    /// `draft` is listed.
+    pub fn drafts(self) -> bool {
+        self != Self::ReadOnly
+    }
+
+    /// `send` is listed.
+    pub fn sends(self) -> bool {
+        self == Self::DraftsAndSend
+    }
+
+    /// One line for doctor and the start-up log.
+    pub fn summary(self, policy: &SendPolicy) -> String {
+        match self {
+            Self::ReadOnly => {
+                "read-only: draft and send are not listed (--writable adds draft, --allow-send \
+                 adds send)"
+                    .to_string()
+            }
+            Self::Drafts => {
+                "drafts: draft is listed, send is not (--allow-send adds it)".to_string()
+            }
+            Self::DraftsAndSend => format!(
+                "drafts+send with {} recipient pattern(s){}",
+                policy.patterns.len(),
+                if policy.patterns.is_empty() {
+                    ": every recipient is refused"
+                } else {
+                    ""
+                }
+            ),
+        }
+    }
+}
+
 /// The server's send policy, fixed at start-up.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SendPolicy {
@@ -98,9 +161,7 @@ impl SendPolicy {
         if !self.enabled {
             return Err(MailError::SendRefused(
                 "sending is disabled on this server (it was not started with --allow-send or \
-                 MAIL_ALLOW_SEND). \
-                 Use the `draft` tool instead: it saves the message in the Drafts folder for a \
-                 person to review and send."
+                 MAIL_ALLOW_SEND)"
                     .to_string(),
             ));
         }
@@ -131,7 +192,7 @@ impl SendPolicy {
     /// One line for doctor and the start-up log.
     pub fn summary(&self) -> String {
         if !self.enabled {
-            "send off: draft only".to_string()
+            "send off".to_string()
         } else if self.patterns.is_empty() {
             "send on, 0 recipient patterns: every recipient is refused".to_string()
         } else {
@@ -225,10 +286,35 @@ mod tests {
     }
 
     #[test]
-    fn disabled_suggests_draft() {
+    fn disabled_names_the_switch() {
         let err = SendPolicy::default().check(["a@example.org"]).unwrap_err();
         assert!(err.to_string().contains("--allow-send"));
-        assert!(err.to_string().contains("`draft`"));
+    }
+
+    #[test]
+    fn modes() {
+        let off = SendPolicy::default();
+        let on = SendPolicy::new(true, &["@a.example".into()]).unwrap();
+        assert_eq!(Mode::new(false, &off), Mode::ReadOnly);
+        assert_eq!(Mode::new(true, &off), Mode::Drafts);
+        // Sending implies drafts, with or without --writable.
+        assert_eq!(Mode::new(false, &on), Mode::DraftsAndSend);
+        assert_eq!(Mode::new(true, &on), Mode::DraftsAndSend);
+        assert!(!Mode::ReadOnly.drafts() && !Mode::ReadOnly.sends());
+        assert!(Mode::Drafts.drafts() && !Mode::Drafts.sends());
+        assert!(Mode::DraftsAndSend.drafts() && Mode::DraftsAndSend.sends());
+        assert!(Mode::ReadOnly.summary(&off).starts_with("read-only"));
+        assert!(Mode::Drafts.summary(&off).starts_with("drafts:"));
+        assert_eq!(
+            Mode::DraftsAndSend.summary(&on),
+            "drafts+send with 1 recipient pattern(s)"
+        );
+        let none = SendPolicy::new(true, &[]).unwrap();
+        assert!(
+            Mode::DraftsAndSend
+                .summary(&none)
+                .ends_with("every recipient is refused")
+        );
     }
 
     #[test]
@@ -239,7 +325,7 @@ mod tests {
         assert!(p.summary().contains("0 recipient patterns"));
         let p = SendPolicy::new(true, &["@a.example".into(), "b@c.example".into()]).unwrap();
         assert!(p.summary().starts_with("send on, 2 recipient pattern(s)"));
-        assert_eq!(SendPolicy::default().summary(), "send off: draft only");
+        assert_eq!(SendPolicy::default().summary(), "send off");
     }
 
     #[test]

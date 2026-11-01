@@ -2,13 +2,13 @@
 
 use std::net::SocketAddr;
 
-use clap::builder::FalseyValueParser;
 use clap::{ArgAction, Args, Parser, Subcommand};
 use emperor_mail::config::Settings;
 use emperor_mail::doctor::{self, Plan};
 use emperor_mail::policy::FromPolicy;
 use emperor_mail::server::Options;
-use emperor_mail::{MailServer, SendPolicy, forward_config, init_tracing};
+use emperor_mail::{MailServer, Mode, SendPolicy, forward_config, init_tracing};
+use emperor_mcp::cli::parse_switch;
 use emperor_mcp::{ServeOptions, serve};
 use rmcp::ServiceExt;
 
@@ -36,9 +36,13 @@ struct RunArgs {
     /// HTTP listen address.
     #[arg(long, default_value = "127.0.0.1:8033")]
     bind: SocketAddr,
-    /// Allow the `send` tool (otherwise only `draft`). From the environment: unset, empty,
-    /// `false`, `0` or `no` mean off.
-    #[arg(long, env = "MAIL_ALLOW_SEND", action = ArgAction::SetTrue, value_parser = FalseyValueParser::new())]
+    /// List the `draft` tool (saves to the Drafts folder). Default: read-only, draft and send are
+    /// not listed. From the environment: unset, empty, `false`, `0`, `no` or `off` mean off.
+    #[arg(long, env = "MAIL_WRITABLE", action = ArgAction::SetTrue, value_parser = parse_switch)]
+    writable: bool,
+    /// List the `send` tool too (implies --writable), for recipients matching --send-allow only.
+    /// From the environment: unset, empty, `false`, `0`, `no` or `off` mean off.
+    #[arg(long, env = "MAIL_ALLOW_SEND", action = ArgAction::SetTrue, value_parser = parse_switch)]
     allow_send: bool,
     /// Recipients `send` may write to: an address (ann@example.org) or a domain (@example.org).
     /// Repeat or separate with commas.
@@ -95,6 +99,7 @@ impl RunArgs {
 
     fn options(&self) -> anyhow::Result<Options> {
         Ok(Options {
+            writable: self.writable || self.allow_send,
             from_policy: FromPolicy::new(&patterns(&self.from_allow))?,
             sent_copy: !self.no_sent_copy,
             pin_servers: self.pin_servers,
@@ -110,9 +115,11 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve(args) => run_serve(args).await,
         Command::Doctor(args) => {
             let options = args.options()?;
+            let policy = args.policy()?;
             let plan = Plan {
                 bind: (!args.stdio).then_some(args.bind),
-                policy: args.policy()?,
+                mode: Mode::new(options.writable, &policy),
+                policy,
                 from_policy: options.from_policy,
                 sent_copy: options.sent_copy,
                 pin_servers: options.pin_servers,
@@ -128,8 +135,10 @@ async fn run_serve(args: RunArgs) -> anyhow::Result<()> {
     let policy = args.policy()?;
     let options = args.options()?;
     let env = Settings::from_env();
+    let mode = Mode::new(options.writable, &policy);
     tracing::info!(
-        policy = %policy.summary(),
+        mode = %mode.summary(&policy),
+        tools = MailServer::tool_names(mode).len(),
         from = %options.from_policy.summary(),
         sent_copy = options.sent_copy,
         pin_servers = options.pin_servers,
@@ -162,9 +171,14 @@ async fn run_serve(args: RunArgs) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    const VARS: [&str; 3] = ["MAIL_ALLOW_SEND", "MAIL_SEND_ALLOW", "MAIL_FROM_ALLOW"];
+    const VARS: [&str; 4] = [
+        "MAIL_WRITABLE",
+        "MAIL_ALLOW_SEND",
+        "MAIL_SEND_ALLOW",
+        "MAIL_FROM_ALLOW",
+    ];
 
-    fn parse(env: &[(&str, &str)], args: &[&str]) -> RunArgs {
+    fn try_parse(env: &[(&str, &str)], args: &[&str]) -> Result<RunArgs, clap::Error> {
         // SAFETY: this is the only test that touches these variables, and it runs every case in
         // sequence on one thread.
         unsafe {
@@ -175,15 +189,50 @@ mod tests {
                 std::env::set_var(k, v);
             }
         }
-        let cli = Cli::try_parse_from(["emperor-mail", "serve"].iter().chain(args))
-            .unwrap_or_else(|e| panic!("{env:?} {args:?}: {e}"));
+        let cli = Cli::try_parse_from(["emperor-mail", "serve"].iter().chain(args))?;
         match cli.command {
-            Command::Serve(a) => a,
+            Command::Serve(a) => Ok(a),
             Command::Doctor(_) => unreachable!(),
         }
     }
 
+    fn parse(env: &[(&str, &str)], args: &[&str]) -> RunArgs {
+        try_parse(env, args).unwrap_or_else(|e| panic!("{env:?} {args:?}: {e}"))
+    }
+
+    fn mode(a: &RunArgs) -> Mode {
+        Mode::new(a.options().unwrap().writable, &a.policy().unwrap())
+    }
+
+    // One test touches the environment, so the cases cannot race each other.
     #[test]
+    fn switches_from_the_environment() {
+        // Read-only unless switched on; falsey values are off; a typo is refused.
+        assert_eq!(mode(&parse(&[], &[])), Mode::ReadOnly);
+        for off in ["", "false", "0", "no", "off"] {
+            let a = parse(&[("MAIL_WRITABLE", off), ("MAIL_ALLOW_SEND", off)], &[]);
+            assert_eq!(mode(&a), Mode::ReadOnly, "{off:?} must be off");
+        }
+        for on in ["true", "1", "yes", "on"] {
+            assert_eq!(
+                mode(&parse(&[("MAIL_WRITABLE", on)], &[])),
+                Mode::Drafts,
+                "MAIL_WRITABLE={on:?}"
+            );
+        }
+        assert_eq!(mode(&parse(&[], &["--writable"])), Mode::Drafts);
+        assert!(try_parse(&[("MAIL_WRITABLE", "maybe")], &[]).is_err());
+        assert!(try_parse(&[("MAIL_ALLOW_SEND", "2")], &[]).is_err());
+        // Sending implies drafts.
+        assert_eq!(
+            mode(&parse(&[("MAIL_ALLOW_SEND", "1")], &[])),
+            Mode::DraftsAndSend
+        );
+        assert_eq!(mode(&parse(&[], &["--allow-send"])), Mode::DraftsAndSend);
+        assert!(parse(&[], &["--allow-send"]).options().unwrap().writable);
+        send_switches_from_the_environment();
+    }
+
     fn send_switches_from_the_environment() {
         // Off unless switched on; falsey values are off.
         assert!(!parse(&[], &[]).allow_send);

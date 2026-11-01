@@ -1,9 +1,10 @@
 //! emperor-mail: an MCP server for email over IMAP and SMTP, built on
 //! [emperor-mcp](https://github.com/yarenty/emperor-mcp).
 //!
-//! Six tools: `list_folders`, `search`, `read_message`, `read_attachment`, `draft`, `send`.
-//! Credentials come from forwarded request headers (shared HTTP server) or the environment (one
-//! mailbox); see [`config`]. Sending is off unless the operator allows it; see [`policy`].
+//! Four reading tools: `list_folders`, `search`, `read_message`, `read_attachment`. Writing is
+//! switched on by the operator: `--writable` adds `draft`, `--allow-send` adds `send` (and
+//! `draft`); see [`policy::Mode`]. Credentials come from forwarded request headers (shared HTTP
+//! server) or the environment (one mailbox); see [`config`].
 
 #![warn(missing_docs)]
 
@@ -20,7 +21,7 @@ pub mod smtp;
 
 pub use config::{Credentials, Settings, forward_config};
 pub use error::MailError;
-pub use policy::{FromPolicy, SendPolicy};
+pub use policy::{FromPolicy, Mode, SendPolicy};
 pub use server::{MailServer, Options};
 
 /// Initialise logging to **stderr** (stdout carries the protocol in stdio mode), filtered by
