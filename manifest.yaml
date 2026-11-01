@@ -1,0 +1,77 @@
+name: mail
+type: server
+about:
+  title: Email (IMAP/SMTP)
+  description: Search and read email and attachments, save drafts, and send to allowed recipients over IMAP and SMTP.
+  icon: /mcpicons/mail.svg
+meta:
+  category: communication
+  tags: [email, imap, smtp, drafts]
+endpoint: http://127.0.0.1:8033/mcp
+topology: forward-headers
+tools:
+  - name: list_folders
+    description: List folders with special use and message and unread counts.
+  - name: search
+    description: Search a folder by from, to, subject, text, date range and unread state; newest first, at most 100.
+  - name: read_message
+    description: Headers, plain-text body and attachment list of one message; leaves it unread unless mark_read is true.
+  - name: read_attachment
+    description: Text of one text, HTML or PDF attachment; metadata only for other types.
+  - name: draft
+    description: Save a message (optionally a threaded reply) in the Drafts folder for a person to send.
+  - name: send
+    description: Send a message over SMTP; only when the server runs with --allow-send and only to allowed recipients.
+headers:
+  X-Mail-User:
+    description: Login name.
+    required: true
+  X-Mail-Password:
+    description: Password or app password. Forwarded to the mail server for one call, never stored.
+    required: true
+    secret: true
+  X-Mail-From:
+    description: From address when the login name is not an address.
+  X-Imap-Host:
+    description: IMAP server (ignored when the operator set IMAP_HOST).
+  X-Imap-Port:
+    description: IMAP port (993 with tls, 143 with starttls).
+  X-Imap-Security:
+    description: tls, starttls or plain (plain only for loopback hosts).
+  X-Smtp-Host:
+    description: SMTP server, needed by send (ignored when the operator set SMTP_HOST).
+  X-Smtp-Port:
+    description: SMTP port (465 with tls, 587 with starttls).
+  X-Smtp-Security:
+    description: tls, starttls or plain (plain only for loopback hosts).
+config:
+  parameters:
+    type: object
+    properties:
+      imap_host:
+        type: string
+        ui:
+          label: IMAP host (IMAP_HOST)
+          hint: Pins every caller to this server. Leave empty to let each request name its own.
+      smtp_host:
+        type: string
+        ui:
+          label: SMTP host (SMTP_HOST)
+          hint: Needed only when sending is allowed.
+      allow_send:
+        type: boolean
+        default: false
+        ui:
+          label: Allow send (--allow-send)
+          hint: Off means draft only.
+      send_allow:
+        type: array
+        items:
+          type: string
+        default: []
+        ui:
+          label: Allowed recipients (--send-allow)
+          hint: Exact addresses or @domain patterns.
+test_tool:
+  name: list_folders
+  args: {}
