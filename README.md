@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/yarenty/emperor-mail/actions/workflows/ci.yml/badge.svg)](https://github.com/yarenty/emperor-mail/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![Glama](https://glama.ai/mcp/servers/yarenty/emperor-mail/badges/score.svg)](https://glama.ai/mcp/servers/yarenty/emperor-mail)
 
 **Your mailbox as MCP tools: search and read by default; draft and send only when you switch them on.**
 
